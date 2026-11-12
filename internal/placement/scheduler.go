@@ -72,18 +72,20 @@ func (p CapacityPolicy) ForHost(host string) CapacityReserve {
 // Allocated CPU/memory include ALL VMs and containers, including stopped guests.
 // Readiness fields must be established by actual template/bridge/storage checks.
 type Node struct {
-	Name                 string
-	Online               bool
-	Reachable            bool
-	TemplateVMID         int
-	TemplateReady        bool
-	NetworkReady         bool
-	CPU                  uint64
-	AllocatedCPU         uint64
-	MemoryBytes          uint64
-	FreeMemoryBytes      uint64
-	AllocatedMemoryBytes uint64
-	Storages             []Storage
+	Name                  string
+	Online                bool
+	Reachable             bool
+	TemplateVMID          int
+	TemplateReady         bool
+	TemplateDiskBytes     uint64
+	TemplateBootDiskBytes uint64
+	NetworkReady          bool
+	CPU                   uint64
+	AllocatedCPU          uint64
+	MemoryBytes           uint64
+	FreeMemoryBytes       uint64
+	AllocatedMemoryBytes  uint64
+	Storages              []Storage
 }
 
 // Machine is a uniquely ownership-verified inventory observation. Resources are
@@ -109,13 +111,14 @@ type Snapshot struct {
 
 // Commitment remains durable until safe reconciliation, not merely a timeout.
 type Commitment struct {
-	MachineID string    `json:"machineId"`
-	OwnerID   string    `json:"ownerId"`
-	GroupID   string    `json:"groupId"`
-	VMID      int       `json:"vmid"`
-	Node      string    `json:"node"`
-	Storage   string    `json:"storage"`
-	Resources Resources `json:"resources"`
+	MachineID     string    `json:"machineId"`
+	OwnerID       string    `json:"ownerId"`
+	GroupID       string    `json:"groupId"`
+	VMID          int       `json:"vmid"`
+	Node          string    `json:"node"`
+	Storage       string    `json:"storage"`
+	Resources     Resources `json:"resources"`
+	BootDiskBytes uint64    `json:"bootDiskBytes"`
 }
 
 type Candidate struct {
@@ -407,7 +410,7 @@ func consistent(inventory Snapshot, commitments []Commitment) bool {
 	for _, commitment := range commitments {
 		if !validIdentity(commitment.MachineID) || !validIdentity(commitment.OwnerID) || !validIdentity(commitment.GroupID) ||
 			!validHost(commitment.Node) || !storageID.MatchString(commitment.Storage) || commitment.VMID < 100 ||
-			seen[commitment.MachineID] || claimed[commitment.VMID] {
+			commitment.BootDiskBytes == 0 || seen[commitment.MachineID] || claimed[commitment.VMID] {
 			return false
 		}
 

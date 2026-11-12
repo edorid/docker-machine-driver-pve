@@ -6,12 +6,14 @@ The revised design below supersedes the original mandatory
 anti-affinity and multi-strategy requirements for the first implementation.
 Items below are milestones, not a statement that functionality is released.
 
-Current increment: source audit, placement and reservation core, and an initial
-Rancher authorization-controller/Helm integration are present. Go race tests and
-vet pass for the current tree. Kubernetes-controller HTTP behavior, Helm rendering,
-release workflow execution, live discovery/lifecycle/native cloud-init, and
-Rancher configuration/UI remain unvalidated or unimplemented. Advanced
-provisioning is not exposed.
+Current increment: placement core, Kubernetes ledger transport, initial
+authorization-controller/Helm integration, Proxmox inventory adapter, clone and
+removal paths, native cloud-init, and an initial Rancher form are present locally.
+Go race tests and vet pass. The Rancher form's discovery is advisory and its
+placement selections are revalidated by the driver; it does not prove template
+guest compatibility in the browser. Lint, ESLint, UI production build, Helm lint
+and rendering, race tests, and vet pass locally. Controller HTTP integration and
+live Proxmox/Rancher qualification have not been run. This is not ready to publish.
 
 ## Agreed placement contract
 
@@ -83,7 +85,8 @@ provisioning is not exposed.
   otherwise. Track migration without assuming the original host.
 - Do not automatically adopt or delete a VM after an ambiguous clone when its
   relationship to the request cannot be established; require operator recovery.
-  No driver-specific tag or description marker is required in the first release.
+  A driver ownership tag is added before cloud-init and is required for any
+  placement-mode deletion; it does not authorize adoption without a ledger record.
 - Rancher owns replacement and upgrade decisions. Without reliable original
   linkage and safe original-state evidence, automatic safe replacement is
   unsupported; do not infer it or implement fencing/etcd recovery. Ordinary

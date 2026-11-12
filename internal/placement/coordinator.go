@@ -32,6 +32,7 @@ const (
 	Reserved   Phase = "reserved"
 	Submitting Phase = "submitting"
 	Submitted  Phase = "submitted"
+	Removing   Phase = "removing"
 )
 
 // Record never expires. Submitting includes the ambiguous "accepted but response
@@ -79,11 +80,12 @@ type Coordinator struct {
 }
 
 type Intent struct {
-	MachineID string
-	OwnerID   string
-	VMID      int
-	Policy    Policy
-	Resources Resources
+	MachineID     string
+	OwnerID       string
+	VMID          int
+	Policy        Policy
+	Resources     Resources
+	BootDiskBytes uint64
 }
 
 // Discover is called again after every CAS conflict. It must obtain complete,
@@ -98,7 +100,7 @@ type Discover func(context.Context) (Snapshot, error)
 func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discover) (Record, Decision, error) {
 	if c.Store == nil || !validIdentity(c.ClusterID) || discover == nil ||
 		!validIdentity(intent.MachineID) || !validIdentity(intent.OwnerID) || intent.VMID < 100 || intent.VMID > 999999999 ||
-		intent.Resources.CPU == 0 || intent.Resources.MemoryBytes == 0 || intent.Resources.DiskBytes == 0 {
+		intent.Resources.CPU == 0 || intent.Resources.MemoryBytes == 0 || intent.Resources.DiskBytes == 0 || intent.BootDiskBytes == 0 {
 		return Record{}, Decision{}, errors.New("invalid coordinator or machine intent")
 	}
 
@@ -119,7 +121,7 @@ func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discov
 		}
 
 		if record, found := ledger.Records[intent.MachineID]; found {
-			if record.OwnerID != intent.OwnerID || record.VMID != intent.VMID || record.PolicyHash != fingerprint || record.Resources != intent.Resources {
+			if record.OwnerID != intent.OwnerID || record.VMID != intent.VMID || record.PolicyHash != fingerprint || record.Resources != intent.Resources || record.BootDiskBytes != intent.BootDiskBytes {
 				return Record{}, Decision{}, ErrIdentityConflict
 			}
 
@@ -163,7 +165,8 @@ func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discov
 		record := Record{
 			Commitment: Commitment{
 				MachineID: intent.MachineID, OwnerID: intent.OwnerID, GroupID: intent.Policy.GroupID,
-				VMID: intent.VMID, Node: decision.Selected.Node, Storage: decision.Selected.Storage, Resources: intent.Resources,
+				VMID: intent.VMID, Node: decision.Selected.Node, Storage: decision.Selected.Storage,
+				Resources: intent.Resources, BootDiskBytes: intent.BootDiskBytes,
 			},
 			PolicyHash: fingerprint, Phase: Reserved, CreatedAt: time.Now().UTC(),
 		}
@@ -232,6 +235,57 @@ func (c Coordinator) RecordTask(ctx context.Context, machineID, ownerID, token, 
 
 		return record, nil
 	})
+}
+
+// BeginRemoval blocks new admission while the caller verifies and deletes the
+// recorded VM. Ambiguous clone submissions are deliberately not removable.
+func (c Coordinator) BeginRemoval(ctx context.Context, machineID, ownerID string) (Record, error) {
+	return c.change(ctx, machineID, ownerID, func(record Record) (Record, error) {
+		switch record.Phase {
+		case Reserved, Submitted:
+			record.Phase = Removing
+			return record, nil
+		case Submitting:
+			return Record{}, ErrUncertainOperation
+		case Removing:
+			return record, nil
+		default:
+			return Record{}, ErrUncertainOperation
+		}
+	})
+}
+
+// CompleteRemoval releases capacity only after the caller has independently
+// verified that the recorded VMID and machine name are absent cluster-wide.
+//
+//nolint:wsl // Removal completion applies and validates one durable ledger transition.
+func (c Coordinator) CompleteRemoval(ctx context.Context, machineID, ownerID string) error {
+	for range maxCASAttempts {
+		document, err := c.read(ctx)
+		if err != nil {
+			return fmt.Errorf("complete removal: %w", err)
+		}
+		record, found := document.Ledger.Records[machineID]
+		if !found {
+			return nil
+		}
+		if record.OwnerID != ownerID || record.Phase != Removing {
+			return ErrUncertainOperation
+		}
+		ledger := document.Ledger
+		delete(ledger.Records, machineID)
+		if err := ledger.Validate(); err != nil {
+			return err
+		}
+		if err := c.Store.CompareAndSwap(ctx, document, ledger); err != nil {
+			if errors.Is(err, ErrConflict) {
+				continue
+			}
+			return fmt.Errorf("complete removal: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("removal contention exceeded bounded retries: %w", ErrConflict)
 }
 
 func (c Coordinator) read(ctx context.Context) (Document, error) {
@@ -303,7 +357,7 @@ func (c Coordinator) change(ctx context.Context, machineID, ownerID string, upda
 
 // Validate fails closed on unknown schema, inconsistent records or size limits.
 //
-//nolint:gocyclo,cyclop // Explicit validation of durable records fails closed.
+//nolint:gocyclo,cyclop,gocognit // Explicit validation of durable records fails closed at the ledger boundary.
 func (l Ledger) Validate() error {
 	if l.Version != 1 || !validIdentity(l.ClusterID) || l.Groups == nil || l.Records == nil {
 		return ErrLedgerUnavailable
@@ -322,7 +376,7 @@ func (l Ledger) Validate() error {
 		if id != record.MachineID || !validIdentity(id) || !validIdentity(record.OwnerID) || !validIdentity(record.GroupID) ||
 			!validHost(record.Node) || !storageID.MatchString(record.Storage) || record.VMID < 100 || record.VMID > 999999999 ||
 			vmids[record.VMID] || owners[record.OwnerID] || record.CreatedAt.IsZero() ||
-			record.Resources.CPU == 0 || record.Resources.MemoryBytes == 0 || record.Resources.DiskBytes == 0 ||
+			record.Resources.CPU == 0 || record.Resources.MemoryBytes == 0 || record.Resources.DiskBytes == 0 || record.BootDiskBytes == 0 ||
 			l.Groups[record.GroupID] != record.PolicyHash || !validHash(record.PolicyHash) {
 			return ErrLedgerUnavailable
 		}
@@ -337,6 +391,10 @@ func (l Ledger) Validate() error {
 		case Submitting, Submitted:
 			if len(record.SubmissionToken) != 32 || len(record.TaskID) > 512 ||
 				(record.Phase == Submitting && record.TaskID != "") || (record.Phase == Submitted && record.TaskID == "") {
+				return ErrLedgerUnavailable
+			}
+		case Removing:
+			if record.TaskID != "" && (len(record.SubmissionToken) != 32 || len(record.TaskID) > 512) {
 				return ErrLedgerUnavailable
 			}
 		default:

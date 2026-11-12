@@ -41,7 +41,7 @@ func testResources() Resources { return Resources{CPU: 2, MemoryBytes: 100, Disk
 func testCommitment(index int, host, group string) Commitment {
 	return Commitment{
 		MachineID: fmt.Sprintf("machine-%d", index), OwnerID: fmt.Sprintf("owner-%d", index), GroupID: group,
-		VMID: 100 + index, Node: host, Storage: "disk-b", Resources: testResources(),
+		VMID: 100 + index, Node: host, Storage: "disk-b", Resources: testResources(), BootDiskBytes: 32 << 30,
 	}
 }
 

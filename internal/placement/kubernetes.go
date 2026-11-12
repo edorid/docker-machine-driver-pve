@@ -1,24 +1,36 @@
+//nolint:wsl // Kubernetes CAS checks are separated for clarity at the trust boundary.
 package placement
 
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path"
+	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	LedgerAPIVersion = "placement.pve.edorid.github.io/v1alpha1"
-	LedgerKind       = "ProxmoxPlacementLedger"
-	requestTimeout   = 10 * time.Second
-	maxObjectBytes   = 1024 * 1024
+	LedgerAPIVersion  = "placement.pve.edorid.github.io/v1alpha1"
+	LedgerKind        = "ProxmoxPlacementLedger"
+	requestTimeout    = 10 * time.Second
+	maxObjectBytes    = 1024 * 1024
+	serviceAccountDir = "/var/run/secrets/kubernetes.io/serviceaccount"
 )
+
+var dnsSubdomain = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$`)
 
 // KubernetesStore updates an administrator-created ledger using Kubernetes
 // resourceVersion optimistic concurrency. It never creates or recreates a missing
@@ -28,24 +40,83 @@ type KubernetesStore struct {
 	expectedUID string
 	client      *http.Client
 	token       func() (string, error)
+	uidMutex    sync.Mutex
+	uidPinned   bool
+}
+
+// NewInClusterKubernetesStore uses the provisioner's projected ServiceAccount
+// token and the Kubernetes service CA. The initial GET pins the ledger UID.
+//
+//nolint:wsl // Validate endpoint, trust roots, and projected credentials at one fail-closed boundary.
+func NewInClusterKubernetesStore(namespace, name string) (*KubernetesStore, error) {
+	if !validKubernetesName(namespace) || !validKubernetesName(name) {
+		return nil, errors.New("invalid placement ledger namespace or name")
+	}
+	host := os.Getenv("KUBERNETES_SERVICE_HOST")
+	port := os.Getenv("KUBERNETES_SERVICE_PORT_HTTPS")
+	if port == "" {
+		port = os.Getenv("KUBERNETES_SERVICE_PORT")
+	}
+	portNumber, portErr := strconv.Atoi(port)
+	if host == "" || portErr != nil || portNumber < 1 || portNumber > 65535 || strings.ContainsAny(host, "/@\r\n") {
+		return nil, errors.New("in-cluster kubernetes endpoint is unavailable")
+	}
+	caPath := path.Join(serviceAccountDir, "ca.crt")
+	caPEM, err := os.ReadFile(caPath)
+	if err != nil {
+		return nil, errors.New("kubernetes service CA is unavailable")
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("kubernetes service CA is invalid")
+	}
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("default HTTP transport is incompatible")
+	}
+	transport := defaultTransport.Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
+	client := &http.Client{Transport: transport}
+	objectURL := "https://" + net.JoinHostPort(host, port) + "/apis/" + LedgerAPIVersion + "/namespaces/" + url.PathEscape(namespace) + "/proxmoxplacementledgers/" + url.PathEscape(name)
+	tokenPath := path.Join(serviceAccountDir, "token")
+	return newKubernetesStore(objectURL, "", false, client, func() (string, error) {
+		data, err := os.ReadFile(tokenPath)
+		if err != nil {
+			return "", ErrLedgerUnavailable
+		}
+		token := strings.TrimSpace(string(data))
+		if token == "" || strings.ContainsAny(token, "\r\n") {
+			return "", ErrLedgerUnavailable
+		}
+		return token, nil
+	})
+}
+
+func validKubernetesName(value string) bool {
+	return len(value) > 0 && len(value) <= 63 && dnsSubdomain.MatchString(value)
 }
 
 // NewKubernetesStore accepts the exact HTTPS URL of one namespaced custom
 // resource. The client must validate the management cluster's TLS certificate;
 // callers configure its trust roots or mTLS. The token callback permits rotation.
 func NewKubernetesStore(objectURL, expectedUID string, client *http.Client, token func() (string, error)) (*KubernetesStore, error) {
+	return newKubernetesStore(objectURL, expectedUID, true, client, token)
+}
+
+func newKubernetesStore(objectURL, expectedUID string, uidPinned bool, client *http.Client, token func() (string, error)) (*KubernetesStore, error) {
 	endpoint, err := url.Parse(objectURL)
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil ||
-		endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path == "" || client == nil || expectedUID == "" {
+		endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path == "" || client == nil || (uidPinned && expectedUID == "") {
 		return nil, errors.New("an exact HTTPS ledger object URL and TLS-verifying HTTP client are required")
 	}
 
 	copyClient := *client
 	copyClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 
-	return &KubernetesStore{objectURL: endpoint.String(), expectedUID: expectedUID, client: &copyClient, token: token}, nil
+	return &KubernetesStore{objectURL: endpoint.String(), expectedUID: expectedUID, uidPinned: uidPinned, client: &copyClient, token: token}, nil
 }
 
+//nolint:wsl // UID pinning and validation remain one atomic in-memory operation.
 func (s *KubernetesStore) Read(ctx context.Context) (Document, error) {
 	data, err := s.request(ctx, http.MethodGet, nil)
 	if err != nil {
@@ -57,6 +128,12 @@ func (s *KubernetesStore) Read(ctx context.Context) (Document, error) {
 		return Document{}, err
 	}
 
+	s.uidMutex.Lock()
+	defer s.uidMutex.Unlock()
+	if !s.uidPinned {
+		s.expectedUID = document.UID
+		s.uidPinned = true
+	}
 	if document.UID != s.expectedUID {
 		return Document{}, ErrLedgerUnavailable
 	}
@@ -66,7 +143,11 @@ func (s *KubernetesStore) Read(ctx context.Context) (Document, error) {
 
 //nolint:cyclop // Each check protects the atomic update boundary.
 func (s *KubernetesStore) CompareAndSwap(ctx context.Context, previous Document, next Ledger) error {
-	if previous.UID != s.expectedUID || previous.Revision == "" || len(previous.envelope) == 0 || next.ClusterID != previous.Ledger.ClusterID {
+	s.uidMutex.Lock()
+	uidMatches := s.uidPinned && previous.UID == s.expectedUID
+	s.uidMutex.Unlock()
+
+	if !uidMatches || previous.Revision == "" || len(previous.envelope) == 0 || next.ClusterID != previous.Ledger.ClusterID {
 		return ErrLedgerUnavailable
 	}
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/edorid/docker-machine-driver-pve/internal/placement"
 	"github.com/luthermonson/go-proxmox"
 	"github.com/rancher/machine/libmachine/drivers"
 	"github.com/rancher/machine/libmachine/log"
@@ -28,7 +29,8 @@ type Driver struct {
 	pveClient *proxmox.Client
 
 	// Proxmox VE ID of the current machine.
-	PVEMachineID *int
+	PVEMachineID  *int
+	placementNode string
 }
 
 // Creates a new driver.
@@ -43,11 +45,16 @@ func NewDriver(machineName, storePath string) *Driver {
 }
 
 // PreCreateCheck implements drivers.Driver.
+//
+//nolint:wsl // Keep legacy checks and placement validation as separate branches.
 func (d *Driver) PreCreateCheck() error {
 	// Check resource pool
 	resourcePool, err := d.getCurrentPVEResourcePool(context.TODO())
 	if err != nil {
 		return err
+	}
+	if d.PlacementGroup != "" {
+		return d.preCreateCheckPlacement(context.TODO())
 	}
 
 	// Check template
@@ -95,7 +102,56 @@ func (d *Driver) PreCreateCheck() error {
 	return nil
 }
 
+//nolint:wsl // Run fresh policy and inventory validation before permitting a placement create.
+func (d *Driver) preCreateCheckPlacement(ctx context.Context) error {
+	coordinator, err := d.newPlacementCoordinator()
+	if err != nil {
+		return err
+	}
+	intent, err := d.placementIntent()
+	if err != nil {
+		return err
+	}
+	intent, err = d.preparePlacementIntent(ctx, coordinator, intent)
+	if err != nil {
+		return fmt.Errorf("validate placement inventory and disk commitments: %w", err)
+	}
+	document, err := coordinator.Store.Read(ctx)
+	if err != nil {
+		return fmt.Errorf("read placement ledger: %w", err)
+	}
+	if record, found := document.Ledger.Records[intent.MachineID]; found {
+		if record.OwnerID != intent.OwnerID {
+			return placement.ErrIdentityConflict
+		}
+		switch record.Phase {
+		case placement.Reserved:
+			return d.revalidateReservedPlacement(ctx, coordinator, intent, record)
+		case placement.Submitted:
+			if record.TaskID == "" {
+				return placement.ErrUncertainOperation
+			}
+			return nil
+		case placement.Submitting, placement.Removing:
+			return placement.ErrUncertainOperation
+		default:
+			return placement.ErrUncertainOperation
+		}
+	}
+	snapshot, err := d.discoverPlacement(ctx, ledgerCommitments(document), intent.MachineID)
+	if err != nil {
+		return err
+	}
+	snapshot.CapacityPolicy = document.Ledger.CapacityPolicy
+	if _, err := placement.Select(ctx, intent.Policy, intent.Resources, snapshot, ledgerCommitments(document)); err != nil {
+		return fmt.Errorf("no valid placement destination: %w", err)
+	}
+	return nil
+}
+
 // Create implements drivers.Driver.
+//
+//nolint:nestif,wsl // Preserve the legacy retry path separately from durable placement submissions.
 func (d *Driver) Create() error {
 	log.Info("Generating SSH keys...")
 
@@ -105,41 +161,49 @@ func (d *Driver) Create() error {
 
 	log.Info("Creating the machine...")
 
-	retryBackoff := 1 // seconds
-
-	for {
-		vmid, err := d.createPVEVirtualMachine(context.TODO())
+	if d.PlacementGroup != "" {
+		vmid, err := d.createPlacedVirtualMachine(context.TODO())
 		if err != nil {
-			if strings.Contains(err.Error(), "config file already exists") {
-				log.Warn("Hit ID conflict when cloning the machine, will retry...")
-
-				//nolint:gosec // Weak number generator is good enough for this case
-				<-time.After(time.Duration(retryBackoff+rand.Intn(retryBackoff)) * time.Second)
-
-				// Double the backoff for next iteration
-				retryBackoff *= 2
-
-				continue
-			}
-
-			if vmid > 0 {
-				log.Warnf("Machine might have been created with ID='%d'", vmid)
-			}
-
-			return fmt.Errorf("failed to create machine: %w", err)
+			return fmt.Errorf("failed to create placed machine: %w", err)
 		}
-
 		d.PVEMachineID = &vmid
-
-		break
+	} else {
+		retryBackoff := 1 // seconds
+		for {
+			vmid, err := d.createPVEVirtualMachine(context.TODO())
+			if err != nil {
+				if strings.Contains(err.Error(), "config file already exists") {
+					log.Warn("Hit ID conflict when cloning the machine, will retry...")
+					//nolint:gosec // Weak number generator is good enough for this case
+					<-time.After(time.Duration(retryBackoff+rand.Intn(retryBackoff)) * time.Second)
+					retryBackoff *= 2
+					continue
+				}
+				if vmid > 0 {
+					log.Warnf("Machine might have been created with ID='%d'", vmid)
+				}
+				return fmt.Errorf("failed to create machine: %w", err)
+			}
+			d.PVEMachineID = &vmid
+			break
+		}
 	}
 
-	if err := d.initialize(); err != nil {
+	var initializeErr error
+	if d.PlacementGroup != "" {
+		initializeErr = d.initializePlaced(context.TODO())
+	} else {
+		initializeErr = d.initialize()
+	}
+	if initializeErr != nil {
+		if d.PlacementGroup != "" {
+			return fmt.Errorf("failed to initialize placed machine ID='%d'; retained for operator recovery: %w", *d.PVEMachineID, initializeErr)
+		}
 		if removeErr := d.Remove(); removeErr != nil {
-			return fmt.Errorf("failed to initialize the machine: %w; failed to remove uninitialized machine: %w", err, removeErr)
+			return fmt.Errorf("failed to initialize the machine: %w; failed to remove uninitialized machine: %w", initializeErr, removeErr)
 		}
 
-		return fmt.Errorf("failed to initialize the machine: %w; machine was removed successfully", err)
+		return fmt.Errorf("failed to initialize the machine: %w; machine was removed successfully", initializeErr)
 	}
 
 	return nil
@@ -369,6 +433,10 @@ func (d *Driver) Kill() error {
 
 // Remove implements drivers.Driver.
 func (d *Driver) Remove() error {
+	if d.PlacementGroup != "" {
+		return d.removePlaced(context.TODO())
+	}
+
 	err := d.Kill()
 	if err != nil {
 		return err

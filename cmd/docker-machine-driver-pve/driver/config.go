@@ -28,6 +28,14 @@ const (
 	flagMemoryBalloon    = "pve-memory-balloon"
 	flagFullClone        = "pve-full-clone"
 	flagTags             = "pve-tags"
+	flagPlacementGroup   = "pve-placement-group"
+	flagPlacementHosts   = "pve-placement-hosts"
+	flagPlacementStorage = "pve-placement-storages"
+	flagPlacementTpls    = "pve-placement-templates"
+	flagDiskSize         = "pve-disk-size-gib"
+	flagLedgerNamespace  = "pve-placement-ledger-namespace"
+	flagLedgerName       = "pve-placement-ledger-name"
+	flagClusterID        = "pve-placement-cluster-id"
 )
 
 // Default values for flags.
@@ -80,6 +88,17 @@ type config struct {
 
 	// Tags to apply to the machine.
 	Tags []string
+
+	// Placement fields are an all-or-nothing opt-in. Their actual execution is
+	// gated until the Proxmox discovery and durable lifecycle adapter is present.
+	PlacementGroup           string
+	PlacementHosts           []string
+	PlacementStorages        []string
+	PlacementTemplates       map[string]int
+	DiskSizeGiB              uint64
+	PlacementLedgerNamespace string
+	PlacementLedgerName      string
+	PlacementClusterID       string
 }
 
 // GetCreateFlags implements drivers.Driver.
@@ -165,12 +184,20 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			EnvVar: flagEnvVarFromFlagName(flagTags),
 			Usage:  "Comma-separated list of tags to assign to the VM",
 		},
+		mcnflag.StringFlag{Name: flagPlacementGroup, EnvVar: flagEnvVarFromFlagName(flagPlacementGroup), Usage: "Stable identity for this machine pool's placement group"},
+		mcnflag.StringFlag{Name: flagPlacementHosts, EnvVar: flagEnvVarFromFlagName(flagPlacementHosts), Usage: "Comma-separated allowlist of Proxmox hosts for placement"},
+		mcnflag.StringFlag{Name: flagPlacementStorage, EnvVar: flagEnvVarFromFlagName(flagPlacementStorage), Usage: "Comma-separated allowlist of Proxmox storage IDs for placement"},
+		mcnflag.StringFlag{Name: flagPlacementTpls, EnvVar: flagEnvVarFromFlagName(flagPlacementTpls), Usage: "Host-local template map as comma-separated host=VMID entries"},
+		mcnflag.StringFlag{Name: flagDiskSize, EnvVar: flagEnvVarFromFlagName(flagDiskSize), Usage: "Requested boot disk size in GiB (placement mode only)"},
+		mcnflag.StringFlag{Name: flagLedgerNamespace, EnvVar: flagEnvVarFromFlagName(flagLedgerNamespace), Usage: "Namespace of the pre-created placement ledger"},
+		mcnflag.StringFlag{Name: flagLedgerName, EnvVar: flagEnvVarFromFlagName(flagLedgerName), Usage: "Name of the pre-created placement ledger"},
+		mcnflag.StringFlag{Name: flagClusterID, EnvVar: flagEnvVarFromFlagName(flagClusterID), Usage: "Stable administrator-assigned identity of this Proxmox cluster"},
 	}
 }
 
 // SetConfigFromFlags implements drivers.Driver.
 //
-//nolint:cyclop,gocyclo
+//nolint:cyclop,gocyclo,gocognit,wsl
 func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	d.URL = opts.String(flagURL)
 	if d.URL == "" {
@@ -199,14 +226,8 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	}
 
 	d.TemplateID = opts.Int(flagTemplateID)
-	if d.TemplateID <= 0 {
-		return fmt.Errorf("flag '--%s' is required and must be >= 0", flagTemplateID)
-	}
 
 	d.ISODeviceName = strings.ToLower(opts.String(flagISODevice))
-	if d.ISODeviceName == "" {
-		return fmt.Errorf("flag '--%s' is required", flagISODevice)
-	}
 
 	d.NetworkInterfaceName = opts.String(flagNetworkInterface)
 	if d.NetworkInterfaceName == "" {
@@ -268,6 +289,20 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	d.FullClone = opts.Bool(flagFullClone)
 
 	d.Tags = strings.Split(opts.String(flagTags), ",")
+	if err := d.setPlacementConfig(opts); err != nil {
+		return err
+	}
+	//nolint:wsl // Legacy-only required flags are validated together after placement parsing.
+	if d.PlacementGroup == "" {
+		if d.TemplateID <= 0 {
+			return fmt.Errorf("flag '--%s' is required and must be >= 100", flagTemplateID)
+		}
+		if d.ISODeviceName == "" {
+			return fmt.Errorf("flag '--%s' is required", flagISODevice)
+		}
+	} else if d.TemplateID != 0 {
+		return fmt.Errorf("flag '--%s' must be omitted in placement mode; use the per-host template map", flagTemplateID)
+	}
 
 	return nil
 }

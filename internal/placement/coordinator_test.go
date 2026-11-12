@@ -81,7 +81,7 @@ func (m *memoryStore) CompareAndSwap(ctx context.Context, previous Document, led
 func testIntent(index int) Intent {
 	return Intent{
 		MachineID: fmt.Sprintf("machine-%d", index), OwnerID: fmt.Sprintf("owner-%d", index), VMID: 100 + index,
-		Policy: testPolicy(), Resources: testResources(),
+		Policy: testPolicy(), Resources: testResources(), BootDiskBytes: 32 << 30,
 	}
 }
 
@@ -100,6 +100,11 @@ func TestReserveReplayAndExactlyOneSubmission(t *testing.T) {
 	replay, _, err := coordinator.Reserve(t.Context(), intent, discoverTestInventory)
 	require.NoError(t, err)
 	require.Equal(t, first, replay)
+
+	changedBootDisk := intent
+	changedBootDisk.BootDiskBytes++
+	_, _, err = coordinator.Reserve(t.Context(), changedBootDisk, discoverTestInventory)
+	require.ErrorIs(t, err, ErrIdentityConflict)
 
 	submitting, err := coordinator.BeginSubmission(t.Context(), intent.MachineID, intent.OwnerID)
 	require.NoError(t, err)
@@ -239,6 +244,31 @@ func TestIntentAndPolicyConflicts(t *testing.T) {
 	changed.Policy.GroupID = "independent-pool"
 	_, _, err = coordinator.Reserve(t.Context(), changed, discoverTestInventory)
 	require.NoError(t, err)
+}
+
+func TestRemovalTransitionReleasesOnlyVerifiedReservation(t *testing.T) {
+	coordinator, store := newTestCoordinator()
+	intent := testIntent(1)
+	_, _, err := coordinator.Reserve(t.Context(), intent, discoverTestInventory)
+	require.NoError(t, err)
+	_, err = coordinator.BeginRemoval(t.Context(), intent.MachineID, intent.OwnerID)
+	require.NoError(t, err)
+	err = coordinator.CompleteRemoval(t.Context(), intent.MachineID, intent.OwnerID)
+	require.NoError(t, err)
+	document, err := store.Read(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, document.Ledger.Records)
+}
+
+func TestAmbiguousCloneCannotEnterRemoval(t *testing.T) {
+	coordinator, _ := newTestCoordinator()
+	intent := testIntent(1)
+	_, _, err := coordinator.Reserve(t.Context(), intent, discoverTestInventory)
+	require.NoError(t, err)
+	_, err = coordinator.BeginSubmission(t.Context(), intent.MachineID, intent.OwnerID)
+	require.NoError(t, err)
+	_, err = coordinator.BeginRemoval(t.Context(), intent.MachineID, intent.OwnerID)
+	require.ErrorIs(t, err, ErrUncertainOperation)
 }
 
 func TestReservationFailsClosed(t *testing.T) {

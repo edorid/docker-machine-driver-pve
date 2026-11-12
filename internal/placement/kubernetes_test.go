@@ -135,6 +135,26 @@ func TestKubernetesStoreRejectsRecreatedLedgerAndRedactsErrors(t *testing.T) {
 	require.NotContains(t, err.Error(), "secret-token")
 }
 
+//nolint:wsl // The server lifecycle and first UID pin are tested together.
+func TestKubernetesStorePinsInitialLedgerUID(t *testing.T) {
+	uid := "first-ledger-uid"
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(writer).Encode(map[string]any{
+			"apiVersion": LedgerAPIVersion, "kind": LedgerKind,
+			"metadata": map[string]string{"uid": uid, "resourceVersion": "1"}, "spec": emptyLedger(),
+		})
+	}))
+	defer server.Close()
+	store, err := newKubernetesStore(server.URL+"/ledger", "", false, server.Client(), nil)
+	require.NoError(t, err)
+	first, err := store.Read(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, uid, first.UID)
+	uid = "replacement-ledger-uid"
+	_, err = store.Read(t.Context())
+	require.ErrorIs(t, err, ErrLedgerUnavailable)
+}
+
 func TestKubernetesLostReservationResponseIsRecovered(t *testing.T) {
 	var mutex sync.Mutex
 
