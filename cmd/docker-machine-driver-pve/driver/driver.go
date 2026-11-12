@@ -218,7 +218,7 @@ func (d *Driver) initialize() error {
 		return fmt.Errorf("failed to retrieve newly created Proxmox VE virtual machine ID='%d': %w", *d.PVEMachineID, err)
 	}
 
-	d.Tags = append(d.Tags, pveMachineTag)
+	d.Tags = d.managedMachineTags(machine.Tags)
 
 	tagTask, err := machine.Config(context.TODO(), proxmox.VirtualMachineOption{
 		Name:  "tags",

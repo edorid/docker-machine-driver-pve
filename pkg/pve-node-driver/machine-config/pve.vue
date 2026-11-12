@@ -80,6 +80,8 @@ export default {
         placementLedgerNamespace: this.value.placementLedgerNamespace ?? '',
         placementLedgerName: this.value.placementLedgerName ?? '',
         placementClusterId: this.value.placementClusterId ?? '',
+        rancherClusterName: this.value.rancherClusterName ?? '',
+        rancherMachinePool: this.value.rancherMachinePool ?? '',
       },
     }
   },
@@ -295,6 +297,8 @@ export default {
       this.value.placementLedgerNamespace = this.currentValue.placementEnabled ? this.currentValue.placementLedgerNamespace.trim() : '';
       this.value.placementLedgerName = this.currentValue.placementEnabled ? this.currentValue.placementLedgerName.trim() : '';
       this.value.placementClusterId = this.currentValue.placementEnabled ? this.currentValue.placementClusterId.trim() : '';
+      this.value.rancherClusterName = this.currentValue.rancherClusterName.trim();
+      this.value.rancherMachinePool = this.currentValue.rancherMachinePool.trim();
 
       this.$emit('validationChanged', true);
     },
@@ -470,6 +474,9 @@ export default {
       } finally {
         this.fetchingCount -= 1;
       }
+    },
+    async refreshPlacementInventory() {
+      await this.fetchPlacementInventory();
     },
     setPlacementTemplate(host, vmid) {
       if(vmid) {
@@ -809,9 +816,15 @@ export default {
           <div class="col span-4"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.placementLedgerName" label="Ledger name" required /></div>
           <div class="col span-4"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.placementClusterId" label="Proxmox cluster identity" required /></div>
         </div>
+        <div class="row mb-10">
+          <div class="col span-6"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.rancherClusterName" label="Rancher cluster name for VM tags (optional)" /></div>
+          <div class="col span-6"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.rancherMachinePool" label="Rancher machine pool for VM tags (optional)" /></div>
+        </div>
+        <p class="text-muted">When supplied, the driver adds normalized <code>rancher-cluster-&lt;name&gt;</code> and <code>rancher-pool-&lt;name&gt;</code> tags automatically. Rancher does not pass these names to the driver, so enter the desired labels here.</p>
         <p class="text-muted">Enter only hosts, storages, and template IDs verified for this Proxmox cluster. The driver revalidates inventory at create time and fails closed on incomplete API access.</p>
         <div v-if="placementInventory" class="placement-inventory">
           <strong>Discovered Proxmox inventory (advisory)</strong>
+          <button type="button" class="btn role-secondary ml-10" :disabled="disabled" @click="refreshPlacementInventory">Refresh</button>
           <ul>
             <li v-for="node in placementInventory" :key="node.name">
               {{ node.name }} — {{ node.online ? 'online' : 'offline' }}; image storages: {{ node.storages ? (node.storages.join(', ') || 'none') : 'unavailable' }};
@@ -819,7 +832,10 @@ export default {
             </li>
           </ul>
         </div>
-        <p v-else class="text-muted">Proxmox host/template discovery unavailable. Configure these values manually; provisioning will fail closed if they are invalid.</p>
+        <div v-else class="text-muted">
+          <p>Proxmox host/template discovery unavailable. Configure these values manually; provisioning will fail closed if they are invalid.</p>
+          <button type="button" class="btn role-secondary" :disabled="disabled" @click="refreshPlacementInventory">Retry discovery</button>
+        </div>
       </template>
 
       <h3>

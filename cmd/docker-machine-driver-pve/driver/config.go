@@ -36,6 +36,8 @@ const (
 	flagLedgerNamespace  = "pve-placement-ledger-namespace"
 	flagLedgerName       = "pve-placement-ledger-name"
 	flagClusterID        = "pve-placement-cluster-id"
+	flagRancherCluster   = "pve-rancher-cluster-name"
+	flagRancherPool      = "pve-rancher-machine-pool"
 )
 
 // Default values for flags.
@@ -99,6 +101,8 @@ type config struct {
 	PlacementLedgerNamespace string
 	PlacementLedgerName      string
 	PlacementClusterID       string
+	RancherClusterName       string
+	RancherMachinePool       string
 }
 
 // GetCreateFlags implements drivers.Driver.
@@ -192,6 +196,8 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 		mcnflag.StringFlag{Name: flagLedgerNamespace, EnvVar: flagEnvVarFromFlagName(flagLedgerNamespace), Usage: "Namespace of the pre-created placement ledger"},
 		mcnflag.StringFlag{Name: flagLedgerName, EnvVar: flagEnvVarFromFlagName(flagLedgerName), Usage: "Name of the pre-created placement ledger"},
 		mcnflag.StringFlag{Name: flagClusterID, EnvVar: flagEnvVarFromFlagName(flagClusterID), Usage: "Stable administrator-assigned identity of this Proxmox cluster"},
+		mcnflag.StringFlag{Name: flagRancherCluster, EnvVar: flagEnvVarFromFlagName(flagRancherCluster), Usage: "Optional Rancher cluster name to add to VM tags"},
+		mcnflag.StringFlag{Name: flagRancherPool, EnvVar: flagEnvVarFromFlagName(flagRancherPool), Usage: "Optional Rancher machine-pool name to add to VM tags"},
 	}
 }
 
@@ -289,6 +295,8 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	d.FullClone = opts.Bool(flagFullClone)
 
 	d.Tags = strings.Split(opts.String(flagTags), ",")
+	d.RancherClusterName = strings.TrimSpace(opts.String(flagRancherCluster))
+	d.RancherMachinePool = strings.TrimSpace(opts.String(flagRancherPool))
 	if err := d.setPlacementConfig(opts); err != nil {
 		return err
 	}

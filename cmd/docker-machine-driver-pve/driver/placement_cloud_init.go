@@ -17,6 +17,7 @@ import (
 const (
 	cloudInitAuxiliaryBytes = 4 * mebibyte
 	placementTagCapacity    = 2
+	rancherTagValueMax      = 48
 )
 
 //nolint:contextcheck // The driver SSH wait uses its own bounded timeout; other operations use ctx.
@@ -31,7 +32,7 @@ func (d *Driver) initializePlaced(ctx context.Context) error {
 		return errors.New("cloned Proxmox machine identity could not be verified")
 	}
 
-	d.Tags = nonEmptyTags(d.Tags, vm.Tags, pveMachineTag)
+	d.Tags = d.managedMachineTags(vm.Tags)
 
 	task, err := vm.Config(ctx, proxmox.VirtualMachineOption{Name: "tags", Value: d.Tags})
 	if err != nil {
@@ -147,6 +148,47 @@ func nonEmptyTags(configured []string, existing, managed string) []string {
 		}
 	}
 	return result
+}
+
+func (d *Driver) managedMachineTags(existing string) []string {
+	tags := nonEmptyTags(d.Tags, existing, pveMachineTag)
+	for _, item := range []struct {
+		kind  string
+		value string
+	}{
+		{kind: "cluster", value: d.RancherClusterName},
+		{kind: "pool", value: d.RancherMachinePool},
+	} {
+		if tag := rancherInfoTag(item.kind, item.value); tag != "" {
+			tags = nonEmptyTags(tags, "", tag)
+		}
+	}
+	return tags
+}
+
+func rancherInfoTag(kind, value string) string {
+	var normalized strings.Builder
+	separator := false
+	for _, character := range strings.ToLower(strings.TrimSpace(value)) {
+		valid := character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '_' || character == '-'
+		if valid {
+			if separator && normalized.Len() > 0 {
+				normalized.WriteByte('-')
+			}
+			separator = false
+			normalized.WriteRune(character)
+		} else {
+			separator = true
+		}
+		if normalized.Len() >= rancherTagValueMax {
+			break
+		}
+	}
+	value = strings.Trim(normalized.String(), "-_")
+	if value == "" {
+		return ""
+	}
+	return "rancher-" + kind + "-" + value
 }
 
 func hasCloudInitDisk(config *proxmox.VirtualMachineConfig) bool {

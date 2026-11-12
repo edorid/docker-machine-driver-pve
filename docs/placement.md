@@ -48,6 +48,15 @@ validation as authoritative; inaccessible or inconsistent inventory blocks
 creation. Placement reservations do not constrain manual Proxmox operations,
 external migrations, or other tools that bypass the ledger.
 
+The form discovers online hosts, enabled/active image storages, and local
+templates using the selected Proxmox credential. Select the allowed hosts first;
+the storage choices then narrow to storages common to those hosts. Choose one
+template per selected host. Discovery can be refreshed, but is advisory and
+does not replace provisioning-time validation. Rancher does not provide cluster
+and machine-pool display names to this driver, so the optional labels in the
+form must be supplied explicitly; when set, the driver adds normalized
+`rancher-cluster-*` and `rancher-pool-*` VM tags automatically.
+
 ## Recovery behavior
 
 Reservations do not expire. A clone submission whose response or durable task

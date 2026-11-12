@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/edorid/docker-machine-driver-pve/internal/placement"
@@ -143,6 +144,20 @@ func TestPlacementCloudInitInputValidation(t *testing.T) {
 		require.Error(t, err, name)
 	}
 	require.Equal(t, []string{"custom", "existing", pveMachineTag}, nonEmptyTags([]string{"custom", "custom"}, "existing;custom", pveMachineTag))
+}
+
+func TestManagedMachineTagsIncludeNormalizedRancherMetadata(t *testing.T) {
+	driver := &Driver{
+		config: config{
+			Tags: []string{"owner:team"}, RancherClusterName: "Production Cluster",
+			RancherMachinePool: "workers-east/blue",
+		},
+	}
+	require.Equal(t, []string{
+		"owner:team", "existing-tag", pveMachineTag, "rancher-cluster-production-cluster", "rancher-pool-workers-east-blue",
+	}, driver.managedMachineTags("existing-tag"))
+	require.Empty(t, rancherInfoTag("cluster", "---"))
+	require.LessOrEqual(t, len(rancherInfoTag("cluster", strings.Repeat("long-name", 30))), 64)
 }
 
 func TestPlacementDiskRequirementReservesLargestEligibleTemplate(t *testing.T) {
