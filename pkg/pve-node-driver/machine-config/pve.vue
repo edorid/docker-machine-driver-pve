@@ -47,6 +47,7 @@ export default {
       // Available devices on current Proxmox VE template.
       devices: null,
       placementInventory: null,
+      placementInventoryError: '',
       selectedPlacementHosts: (this.value.placementHosts || '').split(',').map(value => value.trim()).filter(Boolean),
       selectedPlacementStorages: (this.value.placementStorages || '').split(',').map(value => value.trim()).filter(Boolean),
       placementTemplateSelections: (this.value.placementTemplates || '').split(',').reduce((result, entry) => {
@@ -443,15 +444,17 @@ export default {
       }
     },
     async fetchPlacementInventory() {
+      this.placementInventoryError = '';
       if(this.credential == null) {
         this.placementInventory = null;
+        this.placementInventoryError = 'Select a Proxmox credential with a trusted TLS certificate to discover inventory.';
         return;
       }
       try {
         this.fetchingCount += 1;
         const { data: nodes } = await this.fetchFromProxmox('/api2/json/nodes');
         const inventory = await Promise.all(nodes.map(async node => {
-          const result = { name: node.node, online: node.status === 'online', templates: null, storages: null };
+          const result = { name: node.node, online: node.status === 'online', templates: null, storages: null, error: '' };
           if(!result.online) {
             return result;
           }
@@ -464,6 +467,7 @@ export default {
             result.storages = storageResponse.data.filter(storage => storage.enabled == 1 && storage.active == 1 && (storage.content || '').split(',').includes('images')).map(storage => storage.storage);
           } catch(e) {
             // Keep the node visible but don't imply that inaccessible data is empty.
+            result.error = e?.message || 'Unable to read host inventory.';
           }
           return result;
         }));
@@ -471,12 +475,23 @@ export default {
       } catch(e) {
         // Discovery is advisory only; the driver performs authoritative, fail-closed validation.
         this.placementInventory = null;
+        this.placementInventoryError = e?.message || 'The Proxmox inventory request failed.';
       } finally {
         this.fetchingCount -= 1;
       }
     },
     async refreshPlacementInventory() {
       await this.fetchPlacementInventory();
+    },
+    togglePlacementHost(host, checked) {
+      this.selectedPlacementHosts = checked
+        ? [...new Set([...this.selectedPlacementHosts, host])]
+        : this.selectedPlacementHosts.filter(selected => selected !== host);
+    },
+    togglePlacementStorage(storage, checked) {
+      this.selectedPlacementStorages = checked
+        ? [...new Set([...this.selectedPlacementStorages, storage])]
+        : this.selectedPlacementStorages.filter(selected => selected !== storage);
     },
     setPlacementTemplate(host, vmid) {
       if(vmid) {
@@ -771,6 +786,15 @@ export default {
       </div>
       <template v-if="currentValue.placementEnabled">
         <div class="row mb-10">
+          <div class="col span-12">
+            <strong>Proxmox inventory</strong>
+            <span v-if="fetchingCount > 0" class="text-muted"> — discovering…</span>
+            <span v-else-if="placementInventory" class="text-muted"> — {{ placementInventory.length }} host(s) discovered</span>
+            <button type="button" class="btn role-secondary ml-10" :disabled="disabled" @click="refreshPlacementInventory">{{ placementInventory ? 'Refresh' : 'Discover hosts' }}</button>
+            <p v-if="placementInventoryError" class="text-muted">{{ placementInventoryError }}</p>
+          </div>
+        </div>
+        <div class="row mb-10">
           <div class="col span-6">
             <LabeledInput type="text" :mode="mode" v-model:value="currentValue.placementGroup" label="Placement group identity" required />
           </div>
@@ -781,17 +805,23 @@ export default {
         <div class="row mb-10">
           <div class="col span-6">
             <label>Allowed Proxmox hosts</label>
-            <select class="form-control" multiple size="5" :disabled="disabled" v-model="selectedPlacementHosts" required>
-              <option v-for="host in placementHostChoices" :key="host" :value="host">
+            <div v-if="placementHostChoices.length" class="placement-choice-list">
+              <label v-for="host in placementHostChoices" :key="host" class="placement-choice">
+                <input type="checkbox" :disabled="disabled" :checked="selectedPlacementHosts.includes(host)" @change="togglePlacementHost(host, $event.target.checked)" />
                 {{ host }}{{ placementInventory && placementInventory.find(node => node.name === host && !node.online) ? ' (offline)' : '' }}
-              </option>
-            </select>
+              </label>
+            </div>
+            <p v-else class="text-muted">No hosts discovered yet. Choose the Proxmox credential above and select Discover hosts.</p>
           </div>
           <div class="col span-6">
             <label>Allowed host-local storages</label>
-            <select class="form-control" multiple size="5" :disabled="disabled" v-model="selectedPlacementStorages" required>
-              <option v-for="storage in placementStorageChoices" :key="storage" :value="storage">{{ storage }}</option>
-            </select>
+            <div v-if="placementStorageChoices.length" class="placement-choice-list">
+              <label v-for="storage in placementStorageChoices" :key="storage" class="placement-choice">
+                <input type="checkbox" :disabled="disabled" :checked="selectedPlacementStorages.includes(storage)" @change="togglePlacementStorage(storage, $event.target.checked)" />
+                {{ storage }}
+              </label>
+            </div>
+            <p v-else class="text-muted">Select allowed hosts to show their common image storages.</p>
           </div>
         </div>
         <div class="row mb-10">
@@ -824,17 +854,15 @@ export default {
         <p class="text-muted">Enter only hosts, storages, and template IDs verified for this Proxmox cluster. The driver revalidates inventory at create time and fails closed on incomplete API access.</p>
         <div v-if="placementInventory" class="placement-inventory">
           <strong>Discovered Proxmox inventory (advisory)</strong>
-          <button type="button" class="btn role-secondary ml-10" :disabled="disabled" @click="refreshPlacementInventory">Refresh</button>
           <ul>
             <li v-for="node in placementInventory" :key="node.name">
               {{ node.name }} — {{ node.online ? 'online' : 'offline' }}; image storages: {{ node.storages ? (node.storages.join(', ') || 'none') : 'unavailable' }};
-              templates: {{ node.templates ? (node.templates.map(template => `${template.name || 'unnamed'}=${template.vmid}`).join(', ') || 'none') : 'unavailable' }}
+              templates: {{ node.templates ? (node.templates.map(template => `${template.name || 'unnamed'}=${template.vmid}`).join(', ') || 'none') : 'unavailable' }}{{ node.error ? ` — ${node.error}` : '' }}
             </li>
           </ul>
         </div>
         <div v-else class="text-muted">
           <p>Proxmox host/template discovery unavailable. Configure these values manually; provisioning will fail closed if they are invalid.</p>
-          <button type="button" class="btn role-secondary" :disabled="disabled" @click="refreshPlacementInventory">Retry discovery</button>
         </div>
       </template>
 
@@ -923,3 +951,24 @@ export default {
     </portal>
   </div>
 </template>
+
+<style scoped>
+.placement-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--input-border, #ccc);
+  border-radius: 4px;
+}
+
+.placement-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-weight: normal;
+}
+</style>
