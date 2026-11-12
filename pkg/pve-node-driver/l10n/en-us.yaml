@@ -31,7 +31,7 @@ cluster:
   machineConfig:
     pve:
       template:
-        header: Template
+        header: Proxmox resources
         resourcePool:
           label: Name of the Proxmox VE Resource Pool
         templateID:
@@ -43,6 +43,7 @@ cluster:
           label: Network interface
           tooltip: Bus/Device of the network interface to read machine‘s IP address from (e.g. `net0`)
         cloning:
+          header: Cloning
           label: Force full clone
           tooltip: Forces full copy of all disks, even if underlying storage supports linked clones
       hardware:
@@ -70,3 +71,5 @@ cluster:
         port:
           label: Port
           tooltip: Port to use when connecting to the machine via SSH
+      placement:
+        header: Safe Proxmox placement

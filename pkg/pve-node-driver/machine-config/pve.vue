@@ -61,6 +61,9 @@ export default {
         }
         return result;
       }, {}),
+      memoryBallooningEnabled: this.value.memoryBalloon == null || this.value.memoryBalloon === ''
+        ? !((this.value.placementGroup != null && this.value.placementGroup !== '') || this.mode === 'create')
+        : Number(this.value.memoryBalloon) > 0,
 
       // Current input values.
       currentValue: {
@@ -68,23 +71,24 @@ export default {
         template: this.value.template ? parseInt(this.value.template) : 0,
         isoDevice: this.value.isoDevice ?? '',
         networkInterface: this.value.networkInterface ?? '',
-        sshUser: this.value.sshUser ? this.value.sshUser : 'service',
+        sshUser: this.value.sshUser ? this.value.sshUser : 'user',
         sshPort: this.value.sshPort ? parseInt(this.value.sshPort) : 22,
-        processorSockets: this.value.processorSockets ? parseInt(this.value.processorSockets) : "",
+        processorSockets: this.value.processorSockets ? parseInt(this.value.processorSockets) : 1,
         processorCores: this.value.processorCores ? parseInt(this.value.processorCores) : "",
         memory: this.value.memory ? parseInt(this.value.memory) : "",
         memoryBalloon: this.value.memoryBalloon ? parseInt(this.value.memoryBalloon) : "",
-        fullClone: this.value.fullClone ?? false,
+        fullClone: this.value.fullClone ?? true,
         tags: this.value.tags ?? '',
-        placementEnabled: this.value.placementGroup != null && this.value.placementGroup !== '',
-        placementGroup: this.value.placementGroup ?? '',
+        placementEnabled: (this.value.placementGroup != null && this.value.placementGroup !== '') || this.mode === 'create',
+        placementGroup: this.value.placementGroup || (this.mode === 'create' ? `pve-placement-${this.uuid}` : ''),
         placementHosts: this.value.placementHosts ?? '',
         placementStorages: this.value.placementStorages ?? '',
         placementTemplates: this.value.placementTemplates ?? '',
         diskSizeGiB: this.value.diskSizeGiB ?? '',
-        placementLedgerNamespace: this.value.placementLedgerNamespace ?? '',
-        placementLedgerName: this.value.placementLedgerName ?? '',
-        placementClusterId: this.value.placementClusterId ?? '',
+        placementLedgerNamespace: this.value.placementLedgerNamespace || 'fleet-default',
+        placementLedgerName: this.value.placementLedgerName || 'pve-placement-ledger',
+        placementClusterId: this.value.placementClusterId || (this.credentialId ? `credential-${ this.credentialId.split(/[/:]/).filter(Boolean).pop() }` : ''),
+        placementClusterIdIsAutomatic: !this.value.placementClusterId,
         placementGuestReady: this.value.placementGuestReady ?? false,
         rancherClusterName: this.value.rancherClusterName ?? '',
         rancherMachinePool: this.value.rancherMachinePool ?? '',
@@ -106,6 +110,11 @@ export default {
   },
   watch: {
     async credentialId(){
+      if(this.placementClusterIdIsAutomatic) {
+        const credentialName = (this.credentialId || '').split(/[/:]/).filter(Boolean).pop();
+
+        this.currentValue.placementClusterId = credentialName ? `credential-${ credentialName }` : '';
+      }
       if(this.currentValue.placementEnabled) {
         await this.fetchPlacementInventory();
       } else {
@@ -115,6 +124,9 @@ export default {
     },
     'currentValue.placementEnabled': async function(enabled) {
       if(enabled) {
+        if(!this.currentValue.placementGroup) {
+          this.currentValue.placementGroup = `pve-placement-${this.uuid}`;
+        }
         this.credential = null;
         this.placementInventory = null;
         await this.fetchPlacementInventory();
@@ -142,7 +154,7 @@ export default {
       this.currentValue.placementStorages = storages.join(',');
     },
     'currentValue.memory': function(newValue, oldValue) {
-      if(this.currentValue.memoryBalloon == 0) {
+      if(!this.memoryBallooningEnabled || this.currentValue.memoryBalloon == 0) {
         return
       }
 
@@ -309,7 +321,9 @@ export default {
       this.value.processorSockets = this.currentValue.processorSockets.toString();
       this.value.processorCores = this.currentValue.processorCores.toString();
       this.value.memory = this.currentValue.memory.toString();
-      this.value.memoryBalloon = this.currentValue.placementEnabled ? '0' : this.currentValue.memoryBalloon.toString();
+      this.value.memoryBalloon = this.memoryBallooningEnabled
+        ? (this.currentValue.memory || '').toString()
+        : '0';
       this.value.fullClone = this.currentValue.fullClone;
       this.value.placementGroup = this.currentValue.placementEnabled ? this.currentValue.placementGroup.trim() : '';
       this.value.placementHosts = this.currentValue.placementEnabled ? this.currentValue.placementHosts.trim() : '';
@@ -485,7 +499,7 @@ export default {
       }
       try {
         this.fetchingCount += 1;
-        const { data } = await this.$store.dispatch('management/request', {
+        const inventoryResponse = await this.$store.dispatch('management/request', {
           method: 'GET',
           url: `/k8s/clusters/local/apis/inventory.pve.edorid.github.io/v1alpha1/namespaces/cattle-global-data/proxmoxinventories/${encodeURIComponent(credentialName)}`,
           redirectUnauthorized: false,
@@ -493,19 +507,28 @@ export default {
         if(requestId !== this.placementInventoryRequestId) {
           return;
         }
-        if(!data || !data.inventory || !Array.isArray(data.inventory.nodes)) {
+        if(!inventoryResponse || !inventoryResponse.inventory || !Array.isArray(inventoryResponse.inventory.nodes)) {
           throw new Error('Inventory response was incomplete');
         }
-        this.placementInventory = data.inventory.nodes;
-        this.placementInventoryInsecureTLS = data.insecureTLS === true;
-        this.resourcePools = data.inventory.resourcePools || [];
+        this.placementInventory = inventoryResponse.inventory.nodes;
+        this.placementInventoryInsecureTLS = inventoryResponse.insecureTLS === true;
+        this.resourcePools = inventoryResponse.inventory.resourcePools || [];
       } catch(error) {
         if(requestId === this.placementInventoryRequestId) {
-          if(error?._status === 403 && error?.error === 'proxmox_host_not_allowed' && error?.host) {
+          const status = error?._status ?? error?.status ?? error?.response?.status;
+          if(status === 403 && error?.error === 'proxmox_host_not_allowed' && error?.host) {
             this.placementInventoryBlockedHost = error.host;
             this.placementInventoryError = `Proxmox host ${error.host} is not approved for this node driver.`;
+          } else if(status === 401 || status === 403) {
+            this.placementInventoryError = 'You are not authorized to use this cloud credential for inventory. Ask a Rancher administrator to grant access to the selected credential.';
+          } else if(status === 404) {
+            this.placementInventoryError = 'The placement inventory API is not available. Ask a Rancher administrator to check the inventory controller.';
+          } else if(status === 502) {
+            this.placementInventoryError = 'Proxmox inventory could not be read. Check the credential and Proxmox API access, then retry.';
           } else {
-            this.placementInventoryError = 'Unable to discover inventory for this credential. Check access and retry.';
+            this.placementInventoryError = status
+              ? `Inventory discovery failed (HTTP ${status}). Check Rancher access and the inventory controller, then retry.`
+              : 'Inventory request failed before receiving an HTTP response. Check the local preview connection to Rancher, then retry.';
           }
         }
       } finally {
@@ -543,6 +566,10 @@ export default {
       this.selectedPlacementStorages = checked
         ? [...new Set([...this.selectedPlacementStorages, storage])]
         : this.selectedPlacementStorages.filter(selected => selected !== storage);
+    },
+    setMemoryBallooningEnabled(enabled) {
+      this.memoryBallooningEnabled = enabled;
+      this.currentValue.memoryBalloon = enabled ? (this.currentValue.memory || '') : 0;
     },
     setPlacementTemplate(host, vmid) {
       if(vmid) {
@@ -687,10 +714,10 @@ export default {
       <t k="cluster.machineConfig.pve.template.header" />
     </h3>
     <div class="row mb-10">
-      <div class="col span-6">
+      <div class="col" :class="currentValue.placementEnabled ? 'span-12' : 'span-6'">
         <!-- Resource pool  -->
         <LabeledInput
-          v-if="resourcePools == null"
+          v-if="!currentValue.placementEnabled && resourcePools == null"
           type="text"
           :mode="mode"
           :disabled="disabled"
@@ -701,7 +728,7 @@ export default {
         />
 
         <LabeledSelect
-          v-else
+          v-else-if="resourcePools != null"
           :mode="mode"
           :disabled="disabled"
           v-model:value="currentValue.resourcePool"
@@ -709,6 +736,9 @@ export default {
           label-key="cluster.machineConfig.pve.template.resourcePool.label"
           required
         />
+        <p v-if="currentValue.placementEnabled && resourcePools == null" class="text-muted">
+          Proxmox resource pools will be selectable after inventory discovery succeeds.
+        </p>
       </div>
       <div class="col span-6">
         <!-- Template -->
@@ -737,7 +767,7 @@ export default {
         />
       </div>
     </div>
-    <div class="row mb-20">
+    <div v-if="!currentValue.placementEnabled" class="row mb-20">
       <div class="col span-6">
         <!-- ISO Device -->
         <LabeledInput
@@ -793,21 +823,8 @@ export default {
     <h3>
       <t k="cluster.machineConfig.pve.hardware.header" />
     </h3>
-    <div class="row mb-10">
-      <div class="col span-6">
-        <!-- Processor sockets -->
-        <UnitInput
-          type="number"
-          :mode="mode"
-          :disabled="disabled || (templates != null && !currentValue.template)"
-          v-model:value="currentValue.processorSockets"
-          label-key="cluster.machineConfig.pve.hardware.processorSockets.label"
-          suffix="sockets"
-          min="0"
-          step="1"
-        />
-      </div>
-      <div class="col span-6">
+    <div class="row mb-20">
+      <div class="col" :class="currentValue.placementEnabled ? 'span-3' : 'span-6'">
         <!-- Processor cores -->
         <UnitInput
           type="number"
@@ -820,25 +837,51 @@ export default {
           step="1"
         />
       </div>
-    </div>
-
-    <div class="row mb-20">
-      <div class="col span-6">
+      <div class="col" :class="currentValue.placementEnabled ? 'span-3' : 'span-6'">
         <!-- Memory -->
-        <UnitInput
+        <div class="memory-ballooning-control">
+          <UnitInput
+            type="number"
+            :mode="mode"
+            :disabled="disabled || (templates != null && !currentValue.template)"
+            v-model:value="currentValue.memory"
+            label-key="cluster.machineConfig.pve.hardware.memory.label"
+            suffix="MiB"
+            min="0"
+            step="256"
+          />
+          <Checkbox
+            :value="memoryBallooningEnabled"
+            :disabled="disabled || (!currentValue.placementEnabled && templates != null && !currentValue.template)"
+            label="Enable memory ballooning"
+            @update:value="setMemoryBallooningEnabled"
+          />
+        </div>
+      </div>
+    </div>
+    <div v-if="currentValue.placementEnabled" class="row mb-20">
+      <div class="col span-6">
+        <LabeledInput
           type="number"
+          min="1"
+          step="1"
           :mode="mode"
-          :disabled="disabled || (templates != null && !currentValue.template)"
-          v-model:value="currentValue.memory"
-          label-key="cluster.machineConfig.pve.hardware.memory.label"
-          suffix="MiB"
-          min="0"
-          step="256"
+          v-model:value="currentValue.diskSizeGiB"
+          label="Boot disk size (GiB)"
+          required
+        />
+      </div>
+      <div class="col span-6">
+        <h4 class="mt-0"><t k="cluster.machineConfig.pve.template.cloning.header" /></h4>
+        <Checkbox
+          :mode="mode"
+          v-model:value="currentValue.fullClone"
+          label-key="cluster.machineConfig.pve.template.cloning.label"
+          tooltip-key="cluster.machineConfig.pve.template.cloning.tooltip"
         />
       </div>
     </div>
 
-    <portal :to="`advanced-${uuid}`">
       <h3><t k="cluster.machineConfig.pve.placement.header" /></h3>
       <div class="row mb-10">
         <div class="col span-12">
@@ -847,25 +890,19 @@ export default {
         </div>
       </div>
       <template v-if="currentValue.placementEnabled">
-        <div class="row mb-10">
-          <div class="col span-12">
-            <strong>Proxmox inventory</strong>
-            <span v-if="fetchingCount > 0" class="text-muted"> — discovering…</span>
-            <span v-else-if="placementInventory" class="text-muted"> — {{ placementInventory.length }} host(s) discovered</span>
+        <div class="placement-panel">
+          <div class="placement-panel-heading">
+            <div><h4>Proxmox inventory</h4><p class="text-muted">Inventory loads automatically from the selected cloud credential.</p></div>
+            <span class="placement-status" role="status">{{ fetchingCount > 0 ? 'Discovering…' : placementInventory ? `${placementInventory.length} hosts discovered` : 'Not available' }}</span>
+          </div>
             <p v-if="placementInventoryInsecureTLS" class="text-warning">TLS certificate verification is disabled for this credential. Proxmox API traffic may be intercepted.</p>
             <button v-if="placementInventoryBlockedHost" type="button" class="btn role-secondary ml-10" :disabled="disabled || placementInventoryAllowlistBusy" @click="addInventoryHostToWhitelist">{{ placementInventoryAllowlistBusy ? 'Adding host…' : 'Add host to allowlist and retry' }}</button>
             <button v-else-if="placementInventoryError" type="button" class="btn role-secondary ml-10" :disabled="disabled" @click="refreshPlacementInventory">Retry discovery</button>
             <p v-if="placementInventoryError" class="text-error">{{ placementInventoryError }}</p>
-          </div>
         </div>
-        <div class="row mb-10">
-          <div class="col span-6">
-            <LabeledInput type="text" :mode="mode" v-model:value="currentValue.placementGroup" label="Placement group identity" required />
-          </div>
-          <div class="col span-6">
-            <LabeledInput type="number" min="1" step="1" :mode="mode" v-model:value="currentValue.diskSizeGiB" label="Boot disk size (GiB)" required />
-          </div>
-        </div>
+        <section class="placement-section">
+        <h4>Hosts and storage</h4>
+        <p class="text-muted">Choose hosts and image storage available locally on every selected host.</p>
         <div class="row mb-10">
           <div class="col span-6">
             <label>Allowed Proxmox hosts</label>
@@ -888,19 +925,22 @@ export default {
             <p v-else class="text-muted">Select allowed hosts to show their common image storages.</p>
           </div>
         </div>
+        </section>
+        <section class="placement-section">
+        <h4>Host-local templates</h4>
+        <p class="text-muted">Choose a compatible template on each selected host. Template names do not imply equivalence.</p>
         <div class="row mb-10">
           <div class="col span-12">
-            <label>Host-local template for each allowed host</label>
-            <div v-for="host in selectedPlacementHosts" :key="host" class="row mb-10">
-              <div class="col span-4">{{ host }}</div>
-              <div class="col span-8">
-                <select class="form-control" :disabled="disabled" :value="placementTemplateSelections[host] || ''" @change="setPlacementTemplate(host, $event.target.value)" required>
+            <div v-for="host in selectedPlacementHosts" :key="host" class="placement-template-card">
+              <label :for="`placement-template-${uuid}-${host}`" class="placement-host-name">{{ host }}</label>
+              <div>
+                <select :id="`placement-template-${uuid}-${host}`" class="form-control" :disabled="disabled" :value="placementTemplateSelections[host] || ''" @change="setPlacementTemplate(host, $event.target.value)" required>
                   <option value="">Select a local template</option>
                   <option v-for="template in placementTemplatesForHost(host)" :key="template.vmid" :value="String(template.vmid)">
                     {{ template.name || 'unnamed' }} ({{ template.vmid }}){{ template.compatibilityReasons && template.compatibilityReasons.length ? ' — incompatible' : '' }}
                   </option>
                 </select>
-                <div v-if="placementTemplateSelections[host]" class="text-muted mt-5">
+                 <div v-if="placementTemplateSelections[host]" class="placement-template-details text-muted mt-5">
                   <template v-if="selectedPlacementTemplate(host)">
                     <div>Boot disk: {{ selectedPlacementTemplate(host).bootDisk || 'unverified' }}</div>
                     <div>Network: {{ selectedPlacementTemplate(host).networkInterface || 'ambiguous' }} on {{ selectedPlacementTemplate(host).networkBridge || 'unavailable bridge' }}; dynamic cloud-init address: {{ selectedPlacementTemplate(host).dynamicAddress ? 'verified' : 'not verified' }}</div>
@@ -913,40 +953,41 @@ export default {
                 </div>
               </div>
             </div>
+            <p v-if="!selectedPlacementHosts.length" class="text-muted">Select hosts above to choose their templates.</p>
             <p v-if="!placementInventory" class="text-muted">No template discovery data is available. Existing mappings are preserved; configure host-local templates after discovery succeeds.</p>
           </div>
         </div>
+        </section>
+        <section class="placement-section">
+        <h4>Guest readiness</h4>
         <div class="row mb-10">
           <div class="col span-12">
             <Checkbox v-model:value="currentValue.placementGuestReady" label="I verified every selected guest template supports SSH and passwordless sudo for the configured user." />
             <p class="text-muted">Changing selected hosts or templates, or refreshing inventory, clears this confirmation. Older placement configurations require this review before use.</p>
           </div>
         </div>
+        </section>
+        <details class="placement-section">
+        <summary>Advanced placement coordination</summary>
+        <p class="text-muted">The defaults are suitable for most setups. Change these only when using a custom ledger or coordinating more than one Proxmox cluster.</p>
         <div class="row mb-10">
           <div class="col span-4"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.placementLedgerNamespace" label="Ledger namespace" required /></div>
           <div class="col span-4"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.placementLedgerName" label="Ledger name" required /></div>
-          <div class="col span-4"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.placementClusterId" label="Proxmox cluster identity" required /></div>
+          <div class="col span-4"><LabeledInput type="text" :mode="mode" :value="currentValue.placementClusterId" @change="e => { currentValue.placementClusterId = e.target.value; placementClusterIdIsAutomatic = false; }" label="Proxmox cluster identity" required /></div>
         </div>
-        <div class="row mb-10">
-          <div class="col span-6"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.rancherClusterName" label="Rancher cluster name for VM tags (optional)" /></div>
-          <div class="col span-6"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.rancherMachinePool" label="Rancher machine pool for VM tags (optional)" /></div>
-        </div>
-        <p class="text-muted">When supplied, the driver adds normalized <code>rancher-cluster-&lt;name&gt;</code> and <code>rancher-pool-&lt;name&gt;</code> tags automatically. Rancher does not pass these names to the driver, so enter the desired labels here.</p>
-        <p class="text-muted">Enter only hosts, storages, and template IDs verified for this Proxmox cluster. The driver revalidates inventory at create time and fails closed on incomplete API access.</p>
-        <div v-if="placementInventory" class="placement-inventory">
-          <strong>Discovered Proxmox inventory (advisory)</strong>
+        </details>
+        <details v-if="placementInventory" class="placement-inventory placement-section">
+          <summary>Show discovered inventory details</summary>
           <ul>
             <li v-for="node in placementInventory" :key="node.name">
               {{ node.name }} — {{ node.online ? 'online' : 'offline' }}; image storages: {{ node.storages ? (node.storages.filter(storage => storage.images).map(storage => `${storage.id}${storage.shared ? ' (shared)' : ''}`).join(', ') || 'none' ) : 'unavailable' }};
               templates: {{ node.templates ? (node.templates.map(template => `${template.name || 'unnamed'}=${template.vmid}`).join(', ') || 'none') : 'unavailable' }}{{ node.error ? ` — ${node.error}` : '' }}
             </li>
           </ul>
-        </div>
-        <div v-else class="text-muted">
-          <p>Proxmox host/template discovery unavailable. Configure these values manually; provisioning will fail closed if they are invalid.</p>
-        </div>
+        </details>
       </template>
 
+    <div>
       <h3>
         <t k="cluster.machineConfig.pve.vmTags.header" />
       </h3>
@@ -961,29 +1002,6 @@ export default {
             tooltip-key="cluster.machineConfig.pve.vmTags.tooltip"
             placeholder="tag1,tag2"
           />
-        </div>
-      </div>
-
-      <h3>
-        <t k="cluster.machineConfig.pve.memoryBalloon.header" />
-      </h3>
-      <div class="row mb-20">
-        <div class="col span-6">
-          <!-- Memory balloon -->
-          <UnitInput
-            v-if="!currentValue.placementEnabled"
-            type="number"
-            :mode="mode"
-            :disabled="disabled || (templates != null && !currentValue.template)"
-            v-model:value="currentValue.memoryBalloon"
-            label-key="cluster.machineConfig.pve.memoryBalloon.minimumMemory.label"
-            tooltip-key="cluster.machineConfig.pve.memoryBalloon.minimumMemory.tooltip"
-            suffix="MiB"
-            min="0"
-            step="256"
-            :max="currentValue.memory != '' ? currentValue.memory : undefined"
-          />
-          <p v-else class="text-muted">Memory ballooning is disabled for placement-managed VMs.</p>
         </div>
       </div>
 
@@ -1017,25 +1035,38 @@ export default {
         </div>
       </div>
 
-      <h3>
-        <t k="cluster.machineConfig.pve.template.header" />
-      </h3>
-      <div class="row">
-        <div class="col span-6">
-          <!-- Force full clone -->
-          <Checkbox
-            :mode="mode"
-            v-model:value="currentValue.fullClone"
-            label-key="cluster.machineConfig.pve.template.cloning.label"
-            tooltip-key="cluster.machineConfig.pve.template.cloning.tooltip"
-          />
-        </div>
-      </div>
-    </portal>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.placement-panel, .placement-section {
+  margin: 20px 0;
+  padding: 18px 20px;
+  border: 1px solid var(--border, #d5d8dc);
+  border-radius: 6px;
+}
+
+.placement-panel-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+
+.placement-panel h4, .placement-section h4 { margin: 0 0 6px; }
+.placement-panel p, .placement-section > p { margin: 0 0 14px; }
+.placement-status { padding: 4px 10px; border-radius: 12px; background: var(--sortable-table-header-bg, #edf0f2); font-size: 0.9em; }
+.placement-optional { font-size: 0.85em; font-weight: normal; }
+.placement-template-card { padding: 14px; margin: 10px 0; border: 1px solid var(--border, #d5d8dc); border-radius: 4px; }
+.placement-host-name { display: block; margin-bottom: 8px; font-weight: 600; }
+.placement-template-details { line-height: 1.6; overflow-wrap: anywhere; }
+.placement-inventory summary { cursor: pointer; font-weight: 600; }
+.placement-inventory ul { margin: 12px 0 0; padding-left: 20px; }
+.placement-inventory li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.memory-ballooning-control { display: flex; align-items: center; gap: 12px; }
+.memory-ballooning-control > :first-child { flex: 1; min-width: 0; }
 .placement-choice-list {
   display: flex;
   flex-direction: column;
