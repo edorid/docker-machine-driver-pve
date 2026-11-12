@@ -259,6 +259,14 @@ func (d *Driver) createPlacedVirtualMachine(ctx context.Context) (int, error) {
 	}
 	d.PVEMachineID = &record.VMID
 	d.placementNode = record.Node
+	vm, err = d.getPVEVirtualMachineOnNode(ctx, record.VMID, record.Node)
+	if err != nil || vm.VirtualMachineConfig == nil {
+		return 0, errors.New("read cloned VM network configuration")
+	}
+	d.NetworkInterfaceName, err = placementNetworkInterface(vm.VirtualMachineConfig)
+	if err != nil {
+		return 0, fmt.Errorf("revalidate cloned template networking: %w", err)
+	}
 	return record.VMID, nil
 }
 

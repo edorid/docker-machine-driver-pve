@@ -22,6 +22,9 @@ export default {
   },
   data: () => ({
     errorLabelKey: null,
+    whitelistHost: '',
+    whitelistSaving: false,
+    whitelistError: '',
   }),
   created() {
     this.value.setData('url', this.value.decodedData.url ?? '');
@@ -52,6 +55,8 @@ export default {
     },
     async test() {
       this.errorLabelKey = null;
+      this.whitelistHost = '';
+      this.whitelistError = '';
 
       // Proxmox VE domain must be present in driver's whitelisted domains
       try {
@@ -65,6 +70,7 @@ export default {
 
         if(!whitelistedDomains.includes(domain)) {
           this.errorLabelKey = 'cluster.credential.pve.errors.whitelistedDomains';
+          this.whitelistHost = domain;
           return false;
         }
       } catch(e) {
@@ -100,6 +106,31 @@ export default {
       }
 
       return true;
+    },
+    async addHostToWhitelist() {
+      if(!this.whitelistHost || this.whitelistSaving) {
+        return false;
+      }
+      this.whitelistSaving = true;
+      this.whitelistError = '';
+      try {
+        const nodeDriver = await this.$store.dispatch('rancher/find', {
+          type: 'nodedriver',
+          id: 'pve',
+        });
+        const whitelist = nodeDriver.whitelistDomains || [];
+        if(!whitelist.includes(this.whitelistHost)) {
+          nodeDriver.whitelistDomains = [...whitelist, this.whitelistHost];
+          await nodeDriver.save();
+        }
+        this.whitelistHost = '';
+        return await this.test();
+      } catch(_error) {
+        this.whitelistError = 'Could not update the node driver allowlist. Ask a Rancher administrator to approve this host.';
+        return false;
+      } finally {
+        this.whitelistSaving = false;
+      }
     }
   }
 }
@@ -112,6 +143,17 @@ export default {
         color="error"
         :label-key="errorLabelKey"
       />
+    </div>
+    <div v-if="whitelistHost" class="mb-20">
+      <Banner color="warning">
+        Proxmox host {{ whitelistHost }} is not in the node driver allowlist.
+        <button type="button" class="btn role-secondary ml-10" :disabled="whitelistSaving" @click="addHostToWhitelist">
+          {{ whitelistSaving ? 'Adding host…' : 'Add host to allowlist and retry' }}
+        </button>
+      </Banner>
+    </div>
+    <div v-if="whitelistError" class="mb-20">
+      <Banner color="error">{{ whitelistError }}</Banner>
     </div>
     <div class="mb-20">
       <LabeledInput

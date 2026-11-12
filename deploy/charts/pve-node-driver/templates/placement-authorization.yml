@@ -26,6 +26,15 @@ rules:
   - apiGroups: ["placement.pve.edorid.github.io"]
     resources: ["proxmoxplacementledgers"]
     verbs: ["get", "list", "update"]
+  {{- if .Values.placement.inventoryAPI.enabled }}
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+  - apiGroups: ["management.cattle.io"]
+    resources: ["nodedrivers"]
+    resourceNames: ["pve"]
+    verbs: ["get"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -41,6 +50,180 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: {{ .Values.placement.authorization.clusterRoleName | quote }}
+{{- if .Values.placement.inventoryAPI.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.placement.authorization.clusterRoleBindingName }}-auth-delegator
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.placement.authorization.serviceAccountName | quote }}
+    namespace: {{ .Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.placement.authorization.clusterRoleName }}-credential-read
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.placement.authorization.clusterRoleBindingName }}-credential-read
+  namespace: cattle-global-data
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.placement.authorization.serviceAccountName | quote }}
+    namespace: {{ .Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.placement.authorization.clusterRoleName }}-credential-read
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Values.placement.authorization.clusterRoleName }}-proxy-config
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["extension-apiserver-authentication"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Values.placement.authorization.clusterRoleBindingName }}-proxy-config
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.placement.authorization.serviceAccountName | quote }}
+    namespace: {{ .Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Values.placement.authorization.clusterRoleName }}-proxy-config
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.placement.authorization.clusterRoleName }}-inventory-read
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+rules:
+  - apiGroups: ["inventory.pve.edorid.github.io"]
+    resources: ["proxmoxinventories"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.placement.authorization.clusterRoleBindingName }}-inventory-read
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+subjects:
+  - kind: Group
+    name: system:authenticated
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.placement.authorization.clusterRoleName }}-inventory-read
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ .Values.placement.inventoryAPI.selfSignedIssuerName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.placement.inventoryAPI.caCertificateName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  isCA: true
+  commonName: {{ printf "%s-ca" .Values.placement.inventoryAPI.serviceName | quote }}
+  secretName: {{ .Values.placement.inventoryAPI.caCertificateName | quote }}
+  issuerRef:
+    name: {{ .Values.placement.inventoryAPI.selfSignedIssuerName | quote }}
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ .Values.placement.inventoryAPI.servingIssuerName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  ca:
+    secretName: {{ .Values.placement.inventoryAPI.caCertificateName | quote }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ .Values.placement.inventoryAPI.certificateName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+spec:
+  secretName: {{ .Values.placement.inventoryAPI.certificateName | quote }}
+  dnsNames:
+    - {{ printf "%s.%s.svc" .Values.placement.inventoryAPI.serviceName .Release.Namespace | quote }}
+  issuerRef:
+    name: {{ .Values.placement.inventoryAPI.servingIssuerName | quote }}
+    kind: Issuer
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.placement.inventoryAPI.serviceName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app.kubernetes.io/name: pve-placement-authorizer
+spec:
+  selector:
+    app.kubernetes.io/name: pve-placement-authorizer
+  ports:
+    - name: https
+      port: 443
+      targetPort: inventory-https
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: {{ .Values.placement.inventoryAPI.apiServiceName | quote }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ printf "%s/%s" .Release.Namespace .Values.placement.inventoryAPI.certificateName | quote }}
+spec:
+  group: inventory.pve.edorid.github.io
+  version: v1alpha1
+  groupPriorityMinimum: 200
+  versionPriority: 100
+  service:
+    name: {{ .Values.placement.inventoryAPI.serviceName | quote }}
+    namespace: {{ .Release.Namespace | quote }}
+    port: 443
+  caBundle: ""
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -74,6 +257,28 @@ spec:
           env:
             - name: RECONCILE_INTERVAL_SECONDS
               value: {{ .Values.placement.authorization.reconcileIntervalSeconds | quote }}
+            - name: INVENTORY_API_ENABLED
+              value: {{ .Values.placement.inventoryAPI.enabled | quote }}
+            {{- if .Values.placement.inventoryAPI.enabled }}
+            - name: PROXMOX_ALLOWED_HOSTS
+              value: {{ join "," .Values.placement.inventoryAPI.allowedProxmoxHosts | quote }}
+            {{- end }}
+            {{- if .Values.placement.inventoryAPI.enabled }}
+            - name: INVENTORY_TLS_CERT_FILE
+              value: /var/run/pve-inventory/tls/tls.crt
+            - name: INVENTORY_TLS_KEY_FILE
+              value: /var/run/pve-inventory/tls/tls.key
+            {{- end }}
+          {{- if .Values.placement.inventoryAPI.enabled }}
+          ports:
+            - name: inventory-https
+              containerPort: 8443
+              protocol: TCP
+          volumeMounts:
+            - name: inventory-tls
+              mountPath: /var/run/pve-inventory/tls
+              readOnly: true
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -81,4 +286,10 @@ spec:
               drop: ["ALL"]
           resources:
             {{- toYaml .Values.placement.authorization.resources | nindent 12 }}
+      {{- if .Values.placement.inventoryAPI.enabled }}
+      volumes:
+        - name: inventory-tls
+          secret:
+            secretName: {{ .Values.placement.inventoryAPI.certificateName | quote }}
+      {{- end }}
 {{- end }}

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,8 @@ import (
 
 const (
 	ledgerAPIPath             = "/apis/placement.pve.edorid.github.io/v1alpha1"
+	subjectAccessReviewPath   = "/apis/authorization.k8s.io/v1/subjectaccessreviews"
+	cloudCredentialNamespace  = "cattle-global-data"
 	requestLimit              = 16 << 20
 	maxListPages              = 100
 	pageSize                  = 500
@@ -28,6 +31,118 @@ const (
 	jobCollectionPath         = "/apis/batch/v1/jobs"
 	roleBindingCollectionPath = "/apis/rbac.authorization.k8s.io/v1/rolebindings"
 )
+
+var credentialSecretName = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$`)
+
+// requestIdentity is populated only from request-header identity forwarded by
+// the Kubernetes aggregation layer after its trusted client certificate check.
+type requestIdentity struct {
+	Username string
+	UID      string
+	Groups   []string
+	Extra    map[string][]string
+}
+
+func identityFromAggregatedRequest(request *http.Request) (requestIdentity, error) {
+	if request.TLS == nil || len(request.TLS.VerifiedChains) == 0 || len(request.TLS.PeerCertificates) == 0 {
+		return requestIdentity{}, errors.New("request did not come from the trusted Kubernetes aggregation proxy")
+	}
+	identity := requestIdentity{
+		Username: request.Header.Get("X-Remote-User"),
+		UID:      request.Header.Get("X-Remote-Uid"),
+		Groups:   request.Header.Values("X-Remote-Group"),
+		Extra:    make(map[string][]string),
+	}
+	for name, values := range request.Header {
+		const prefix = "X-Remote-Extra-"
+		if strings.HasPrefix(http.CanonicalHeaderKey(name), prefix) {
+			identity.Extra[strings.ToLower(strings.TrimPrefix(http.CanonicalHeaderKey(name), prefix))] = values
+		}
+	}
+	if !identity.valid() {
+		return requestIdentity{}, errors.New("authenticated request identity is incomplete")
+	}
+	return identity, nil
+}
+
+func (i requestIdentity) valid() bool {
+	return i.Username != "" && i.Username != "system:anonymous" && len(i.Groups) > 0
+}
+
+// authorizeSecretRead asks Kubernetes to evaluate the caller's effective
+// authorization for this exact Secret. It fails closed on denied, missing, or
+// malformed SubjectAccessReview responses.
+func (c *kubeClient) authorizeSecretRead(ctx context.Context, identity requestIdentity, namespace, name string) error {
+	if !identity.valid() || namespace != cloudCredentialNamespace || !credentialSecretName.MatchString(name) {
+		return errors.New("invalid authenticated cloud credential request")
+	}
+	review := map[string]any{
+		"apiVersion": "authorization.k8s.io/v1", "kind": "SubjectAccessReview",
+		"spec": map[string]any{
+			"user": identity.Username, "uid": identity.UID, "groups": identity.Groups, "extra": identity.Extra,
+			"resourceAttributes": map[string]any{
+				"namespace": namespace, "verb": "get", "group": "", "resource": "secrets", "name": name,
+			},
+		},
+	}
+	data, err := c.request(ctx, http.MethodPost, subjectAccessReviewPath, review)
+	if err != nil {
+		return errors.New("cloud credential authorization check failed")
+	}
+	var response struct {
+		Status struct {
+			Allowed bool   `json:"allowed"`
+			Denied  bool   `json:"denied"`
+			Reason  string `json:"reason"`
+		} `json:"status"`
+	}
+	if json.Unmarshal(data, &response) != nil || !response.Status.Allowed || response.Status.Denied {
+		return errors.New("request is not authorized to use this cloud credential")
+	}
+	return nil
+}
+
+type cloudCredential struct {
+	URL         string `json:"url"`
+	InsecureTLS bool   `json:"insecureTls"`
+	TokenID     string `json:"tokenId"`
+	TokenSecret string `json:"tokenSecret"`
+}
+
+// getCloudCredential performs the caller's exact-object authorization before
+// issuing a separate Secret GET. Secret payloads are never placed in errors.
+func (c *kubeClient) getCloudCredential(ctx context.Context, identity requestIdentity, name string) (cloudCredential, error) {
+	if err := c.authorizeSecretRead(ctx, identity, cloudCredentialNamespace, name); err != nil {
+		return cloudCredential{}, err
+	}
+	path := "/api/v1/namespaces/" + cloudCredentialNamespace + "/secrets/" + url.PathEscape(name)
+	data, err := c.request(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return cloudCredential{}, errors.New("authorized cloud credential is unavailable")
+	}
+	var secret struct {
+		Metadata struct {
+			Name        string            `json:"name"`
+			Labels      map[string]string `json:"labels"`
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+		Data map[string][]byte `json:"data"`
+	}
+	if json.Unmarshal(data, &secret) != nil || secret.Metadata.Name != name ||
+		secret.Metadata.Annotations["provisioning.cattle.io/driver"] != "pve" {
+		return cloudCredential{}, errors.New("selected Secret is not a Proxmox cloud credential")
+	}
+	credential := cloudCredential{
+		URL:         string(secret.Data["pvecredentialConfig-url"]),
+		InsecureTLS: string(secret.Data["pvecredentialConfig-insecureTls"]) == "true",
+		TokenID:     string(secret.Data["pvecredentialConfig-tokenId"]),
+		TokenSecret: string(secret.Data["pvecredentialConfig-tokenSecret"]),
+	}
+	if credential.URL == "" || credential.TokenID == "" || credential.TokenSecret == "" {
+		return cloudCredential{}, errors.New("selected Proxmox cloud credential is incomplete")
+	}
+	return credential, nil
+}
 
 var (
 	ErrNotFound = errors.New("kubernetes object not found")
@@ -476,6 +591,11 @@ func Run(ctx context.Context) error {
 	client, err := inClusterClient()
 	if err != nil {
 		return err
+	}
+	if os.Getenv("INVENTORY_API_ENABLED") == "true" {
+		if _, err := startInventoryAPI(ctx, client); err != nil {
+			return fmt.Errorf("start credential-scoped inventory API: %w", err)
+		}
 	}
 
 	interval := defaultReconcileInterval

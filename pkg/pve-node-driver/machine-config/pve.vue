@@ -48,6 +48,10 @@ export default {
       devices: null,
       placementInventory: null,
       placementInventoryError: '',
+      placementInventoryInsecureTLS: false,
+      placementInventoryRequestId: 0,
+      placementInventoryBlockedHost: '',
+      placementInventoryAllowlistBusy: false,
       selectedPlacementHosts: (this.value.placementHosts || '').split(',').map(value => value.trim()).filter(Boolean),
       selectedPlacementStorages: (this.value.placementStorages || '').split(',').map(value => value.trim()).filter(Boolean),
       placementTemplateSelections: (this.value.placementTemplates || '').split(',').reduce((result, entry) => {
@@ -81,6 +85,7 @@ export default {
         placementLedgerNamespace: this.value.placementLedgerNamespace ?? '',
         placementLedgerName: this.value.placementLedgerName ?? '',
         placementClusterId: this.value.placementClusterId ?? '',
+        placementGuestReady: this.value.placementGuestReady ?? false,
         rancherClusterName: this.value.rancherClusterName ?? '',
         rancherMachinePool: this.value.rancherMachinePool ?? '',
       },
@@ -90,16 +95,32 @@ export default {
     this.validate();
   },
   async fetch(){
+    if(this.currentValue.placementEnabled) {
+      await this.fetchPlacementInventory();
+      return;
+    }
     await this.fetchCredential();
     await this.fetchResourcePools();
     await this.fetchTemplates();
     await this.fetchDevices();
-    await this.fetchPlacementInventory();
   },
   watch: {
     async credentialId(){
-      await this.$fetch();
+      if(this.currentValue.placementEnabled) {
+        await this.fetchPlacementInventory();
+      } else {
+        await this.$fetch();
+      }
       this.validate();
+    },
+    'currentValue.placementEnabled': async function(enabled) {
+      if(enabled) {
+        this.credential = null;
+        this.placementInventory = null;
+        await this.fetchPlacementInventory();
+      } else {
+        await this.$fetch();
+      }
     },
     'currentValue.resourcePool': async function (){
       await this.fetchTemplates();
@@ -225,7 +246,7 @@ export default {
         return
       }
 
-      if(this.currentValue.networkInterface == '') {
+      if(!this.currentValue.placementEnabled && this.currentValue.networkInterface == '') {
         this.$emit('validationChanged', false);
         return
       }
@@ -255,12 +276,12 @@ export default {
         return
       }
 
-      if(this.currentValue.memoryBalloon != "" && this.currentValue.memoryBalloon < 0) {
+      if(!this.currentValue.placementEnabled && this.currentValue.memoryBalloon != "" && this.currentValue.memoryBalloon < 0) {
         this.$emit('validationChanged', false);
         return
       }
 
-      if(this.currentValue.memory != "" && this.currentValue.memoryBalloon != "" && this.currentValue.memory < this.currentValue.memoryBalloon) {
+      if(!this.currentValue.placementEnabled && this.currentValue.memory != "" && this.currentValue.memoryBalloon != "" && this.currentValue.memory < this.currentValue.memoryBalloon) {
         this.$emit('validationChanged', false);
         return
       }
@@ -268,11 +289,11 @@ export default {
       if(this.currentValue.placementEnabled && (
         !this.currentValue.placementGroup.trim() || !this.currentValue.placementHosts.trim() ||
         !this.currentValue.placementStorages.trim() || !this.currentValue.placementTemplates.trim() ||
-        !this.placementTemplatesValid ||
+        !this.placementTemplatesValid || this.selectedPlacementHosts.some(host => !this.placementTemplateCompatible(host)) ||
         !this.currentValue.diskSizeGiB || Number(this.currentValue.diskSizeGiB) < 1 ||
         !this.currentValue.placementLedgerNamespace.trim() || !this.currentValue.placementLedgerName.trim() ||
         !this.currentValue.placementClusterId.trim() || this.currentValue.processorSockets < 1 ||
-        this.currentValue.processorCores < 1 || this.currentValue.memory < 1
+        this.currentValue.processorCores < 1 || this.currentValue.memory < 1 || !this.currentValue.placementGuestReady
       )) {
         this.$emit('validationChanged', false);
         return
@@ -282,13 +303,13 @@ export default {
       this.value.resourcePool = this.currentValue.resourcePool;
       this.value.template = this.currentValue.placementEnabled ? '' : this.currentValue.template.toString();
       this.value.isoDevice = this.currentValue.placementEnabled ? '' : this.currentValue.isoDevice;
-      this.value.networkInterface = this.currentValue.networkInterface;
+      this.value.networkInterface = this.currentValue.placementEnabled ? '' : this.currentValue.networkInterface;
       this.value.sshUser = this.currentValue.sshUser;
       this.value.sshPort = this.currentValue.sshPort.toString();
       this.value.processorSockets = this.currentValue.processorSockets.toString();
       this.value.processorCores = this.currentValue.processorCores.toString();
       this.value.memory = this.currentValue.memory.toString();
-      this.value.memoryBalloon = this.currentValue.memoryBalloon.toString();
+      this.value.memoryBalloon = this.currentValue.placementEnabled ? '0' : this.currentValue.memoryBalloon.toString();
       this.value.fullClone = this.currentValue.fullClone;
       this.value.placementGroup = this.currentValue.placementEnabled ? this.currentValue.placementGroup.trim() : '';
       this.value.placementHosts = this.currentValue.placementEnabled ? this.currentValue.placementHosts.trim() : '';
@@ -298,6 +319,7 @@ export default {
       this.value.placementLedgerNamespace = this.currentValue.placementEnabled ? this.currentValue.placementLedgerNamespace.trim() : '';
       this.value.placementLedgerName = this.currentValue.placementEnabled ? this.currentValue.placementLedgerName.trim() : '';
       this.value.placementClusterId = this.currentValue.placementEnabled ? this.currentValue.placementClusterId.trim() : '';
+      this.value.placementGuestReady = this.currentValue.placementEnabled ? this.currentValue.placementGuestReady : false;
       this.value.rancherClusterName = this.currentValue.rancherClusterName.trim();
       this.value.rancherMachinePool = this.currentValue.rancherMachinePool.trim();
 
@@ -444,44 +466,73 @@ export default {
       }
     },
     async fetchPlacementInventory() {
+      const requestId = ++this.placementInventoryRequestId;
+      this.currentValue.placementGuestReady = false;
       this.placementInventoryError = '';
-      if(this.credential == null) {
-        this.placementInventory = null;
-        this.placementInventoryError = 'Select a Proxmox credential with a trusted TLS certificate to discover inventory.';
+      this.placementInventoryBlockedHost = '';
+      this.placementInventory = null;
+      this.placementInventoryInsecureTLS = false;
+      this.resourcePools = null;
+      if(!this.credentialId) {
+        this.placementInventoryError = 'Select a Proxmox cloud credential to discover inventory.';
+        return;
+      }
+      const parts = this.credentialId.includes(':') ? this.credentialId.split(':') : this.credentialId.split('/');
+      const [namespace, credentialName, extra] = parts;
+      if(namespace !== 'cattle-global-data' || !credentialName || extra !== undefined) {
+        this.placementInventoryError = 'The selected credential is not a supported Proxmox cloud credential.';
         return;
       }
       try {
         this.fetchingCount += 1;
-        const { data: nodes } = await this.fetchFromProxmox('/api2/json/nodes');
-        const inventory = await Promise.all(nodes.map(async node => {
-          const result = { name: node.node, online: node.status === 'online', templates: null, storages: null, error: '' };
-          if(!result.online) {
-            return result;
+        const { data } = await this.$store.dispatch('management/request', {
+          method: 'GET',
+          url: `/k8s/clusters/local/apis/inventory.pve.edorid.github.io/v1alpha1/namespaces/cattle-global-data/proxmoxinventories/${encodeURIComponent(credentialName)}`,
+          redirectUnauthorized: false,
+        });
+        if(requestId !== this.placementInventoryRequestId) {
+          return;
+        }
+        if(!data || !data.inventory || !Array.isArray(data.inventory.nodes)) {
+          throw new Error('Inventory response was incomplete');
+        }
+        this.placementInventory = data.inventory.nodes;
+        this.placementInventoryInsecureTLS = data.insecureTLS === true;
+        this.resourcePools = data.inventory.resourcePools || [];
+      } catch(error) {
+        if(requestId === this.placementInventoryRequestId) {
+          if(error?._status === 403 && error?.error === 'proxmox_host_not_allowed' && error?.host) {
+            this.placementInventoryBlockedHost = error.host;
+            this.placementInventoryError = `Proxmox host ${error.host} is not approved for this node driver.`;
+          } else {
+            this.placementInventoryError = 'Unable to discover inventory for this credential. Check access and retry.';
           }
-          try {
-            const [vmResponse, storageResponse] = await Promise.all([
-              this.fetchFromProxmox(`/api2/json/nodes/${encodeURIComponent(node.node)}/qemu`),
-              this.fetchFromProxmox(`/api2/json/nodes/${encodeURIComponent(node.node)}/storage`),
-            ]);
-            result.templates = vmResponse.data.filter(vm => vm.template == 1).map(vm => ({ vmid: vm.vmid, name: vm.name }));
-            result.storages = storageResponse.data.filter(storage => storage.enabled == 1 && storage.active == 1 && (storage.content || '').split(',').includes('images')).map(storage => storage.storage);
-          } catch(e) {
-            // Keep the node visible but don't imply that inaccessible data is empty.
-            result.error = e?.message || 'Unable to read host inventory.';
-          }
-          return result;
-        }));
-        this.placementInventory = inventory;
-      } catch(e) {
-        // Discovery is advisory only; the driver performs authoritative, fail-closed validation.
-        this.placementInventory = null;
-        this.placementInventoryError = e?.message || 'The Proxmox inventory request failed.';
+        }
       } finally {
         this.fetchingCount -= 1;
       }
     },
     async refreshPlacementInventory() {
       await this.fetchPlacementInventory();
+    },
+    async addInventoryHostToWhitelist() {
+      if(!this.placementInventoryBlockedHost || this.placementInventoryAllowlistBusy) {
+        return;
+      }
+      this.placementInventoryAllowlistBusy = true;
+      try {
+        const nodeDriver = await this.$store.dispatch('rancher/find', { type: 'nodedriver', id: 'pve' });
+        const whitelist = nodeDriver.whitelistDomains || [];
+        if(!whitelist.includes(this.placementInventoryBlockedHost)) {
+          nodeDriver.whitelistDomains = [...whitelist, this.placementInventoryBlockedHost];
+          await nodeDriver.save();
+        }
+        await this.fetchPlacementInventory();
+      } catch(_error) {
+        this.placementInventoryError = 'Could not update the Proxmox host allowlist. Ask a Rancher administrator to approve this host.';
+      } finally {
+        this.placementInventoryAllowlistBusy = false;
+      }
     },
     togglePlacementHost(host, checked) {
       this.selectedPlacementHosts = checked
@@ -508,6 +559,7 @@ export default {
         .filter(host => this.placementTemplateSelections[host])
         .map(host => `${host}=${this.placementTemplateSelections[host]}`)
         .join(',');
+      this.currentValue.placementGuestReady = false;
     },
     placementTemplatesForHost(host) {
       const node = (this.placementInventory || []).find(item => item.name === host);
@@ -517,6 +569,14 @@ export default {
         templates.push({ vmid: selected, name: 'Previously configured' });
       }
       return templates;
+    },
+    selectedPlacementTemplate(host) {
+      const selected = this.placementTemplateSelections[host];
+      return this.placementTemplatesForHost(host).find(item => String(item.vmid) === String(selected));
+    },
+    placementTemplateCompatible(host) {
+      const template = this.selectedPlacementTemplate(host);
+      return !!template && Array.isArray(template.compatibilityReasons) && template.compatibilityReasons.length === 0;
     },
     fetchFromProxmox(apiPath){
       if(this.credential == null) {
@@ -594,7 +654,8 @@ export default {
       if(selectedNodes.some(node => !node || !node.online || node.storages == null)) {
         return [...new Set(this.selectedPlacementStorages)].sort();
       }
-      const common = selectedNodes.map(node => node.storages).reduce((left, right) => left.filter(storage => right.includes(storage)));
+      const eligible = node => (node.storages || []).filter(storage => storage.ready && storage.images && !storage.shared).map(storage => storage.id);
+      const common = selectedNodes.map(eligible).reduce((left, right) => left.filter(storage => right.includes(storage)));
       return [...new Set([...this.selectedPlacementStorages, ...common])].sort();
     },
     placementHostChoices() {
@@ -705,7 +766,7 @@ export default {
       <div class="col span-6">
         <!-- Network interface -->
         <LabeledInput
-          v-if="devices == null"
+          v-if="!currentValue.placementEnabled && devices == null"
           type="text"
           :mode="mode"
           :value="currentValue.networkInterface"
@@ -716,7 +777,7 @@ export default {
         />
 
         <LabeledSelect
-          v-else
+          v-else-if="!currentValue.placementEnabled"
           :mode="mode"
           :disabled="disabled || (templates != null && !currentValue.template)"
           v-model:value="currentValue.networkInterface"
@@ -725,6 +786,7 @@ export default {
           tooltip-key="cluster.machineConfig.pve.template.network.tooltip"
           required
         />
+        <p v-else class="text-muted">Placement infers net0, or the sole template interface, and preserves template networking.</p>
       </div>
     </div>
 
@@ -790,8 +852,10 @@ export default {
             <strong>Proxmox inventory</strong>
             <span v-if="fetchingCount > 0" class="text-muted"> — discovering…</span>
             <span v-else-if="placementInventory" class="text-muted"> — {{ placementInventory.length }} host(s) discovered</span>
-            <button type="button" class="btn role-secondary ml-10" :disabled="disabled" @click="refreshPlacementInventory">{{ placementInventory ? 'Refresh' : 'Discover hosts' }}</button>
-            <p v-if="placementInventoryError" class="text-muted">{{ placementInventoryError }}</p>
+            <p v-if="placementInventoryInsecureTLS" class="text-warning">TLS certificate verification is disabled for this credential. Proxmox API traffic may be intercepted.</p>
+            <button v-if="placementInventoryBlockedHost" type="button" class="btn role-secondary ml-10" :disabled="disabled || placementInventoryAllowlistBusy" @click="addInventoryHostToWhitelist">{{ placementInventoryAllowlistBusy ? 'Adding host…' : 'Add host to allowlist and retry' }}</button>
+            <button v-else-if="placementInventoryError" type="button" class="btn role-secondary ml-10" :disabled="disabled" @click="refreshPlacementInventory">Retry discovery</button>
+            <p v-if="placementInventoryError" class="text-error">{{ placementInventoryError }}</p>
           </div>
         </div>
         <div class="row mb-10">
@@ -811,7 +875,7 @@ export default {
                 {{ host }}{{ placementInventory && placementInventory.find(node => node.name === host && !node.online) ? ' (offline)' : '' }}
               </label>
             </div>
-            <p v-else class="text-muted">No hosts discovered yet. Choose the Proxmox credential above and select Discover hosts.</p>
+            <p v-else class="text-muted">No hosts discovered yet. Select a Proxmox credential to load inventory automatically.</p>
           </div>
           <div class="col span-6">
             <label>Allowed host-local storages</label>
@@ -833,12 +897,29 @@ export default {
                 <select class="form-control" :disabled="disabled" :value="placementTemplateSelections[host] || ''" @change="setPlacementTemplate(host, $event.target.value)" required>
                   <option value="">Select a local template</option>
                   <option v-for="template in placementTemplatesForHost(host)" :key="template.vmid" :value="String(template.vmid)">
-                    {{ template.name || 'unnamed' }} ({{ template.vmid }})
+                    {{ template.name || 'unnamed' }} ({{ template.vmid }}){{ template.compatibilityReasons && template.compatibilityReasons.length ? ' — incompatible' : '' }}
                   </option>
                 </select>
+                <div v-if="placementTemplateSelections[host]" class="text-muted mt-5">
+                  <template v-if="selectedPlacementTemplate(host)">
+                    <div>Boot disk: {{ selectedPlacementTemplate(host).bootDisk || 'unverified' }}</div>
+                    <div>Network: {{ selectedPlacementTemplate(host).networkInterface || 'ambiguous' }} on {{ selectedPlacementTemplate(host).networkBridge || 'unavailable bridge' }}; dynamic cloud-init address: {{ selectedPlacementTemplate(host).dynamicAddress ? 'verified' : 'not verified' }}</div>
+                    <div>Cloud-init drive: {{ selectedPlacementTemplate(host).cloudInit ? 'present' : 'missing' }}; guest agent: {{ selectedPlacementTemplate(host).guestAgent ? 'present' : 'missing' }}</div>
+                    <div>Template disks: {{ Object.entries(selectedPlacementTemplate(host).disks || {}).map(([device, config]) => `${device}=${config}`).join('; ') || 'unavailable' }}</div>
+                    <div>Disk storage: {{ Object.entries(selectedPlacementTemplate(host).diskStorages || {}).map(([device, storage]) => `${device}=${storage}`).join(', ') || 'unverified' }}</div>
+                    <div v-if="selectedPlacementTemplate(host).compatibilityReasons && selectedPlacementTemplate(host).compatibilityReasons.length" class="text-error">{{ selectedPlacementTemplate(host).compatibilityReasons.join('; ') }}</div>
+                  </template>
+                  <div v-else class="text-warning">Previously selected template is unavailable in discovered inventory.</div>
+                </div>
               </div>
             </div>
             <p v-if="!placementInventory" class="text-muted">No template discovery data is available. Existing mappings are preserved; configure host-local templates after discovery succeeds.</p>
+          </div>
+        </div>
+        <div class="row mb-10">
+          <div class="col span-12">
+            <Checkbox v-model:value="currentValue.placementGuestReady" label="I verified every selected guest template supports SSH and passwordless sudo for the configured user." />
+            <p class="text-muted">Changing selected hosts or templates, or refreshing inventory, clears this confirmation. Older placement configurations require this review before use.</p>
           </div>
         </div>
         <div class="row mb-10">
@@ -856,7 +937,7 @@ export default {
           <strong>Discovered Proxmox inventory (advisory)</strong>
           <ul>
             <li v-for="node in placementInventory" :key="node.name">
-              {{ node.name }} — {{ node.online ? 'online' : 'offline' }}; image storages: {{ node.storages ? (node.storages.join(', ') || 'none') : 'unavailable' }};
+              {{ node.name }} — {{ node.online ? 'online' : 'offline' }}; image storages: {{ node.storages ? (node.storages.filter(storage => storage.images).map(storage => `${storage.id}${storage.shared ? ' (shared)' : ''}`).join(', ') || 'none' ) : 'unavailable' }};
               templates: {{ node.templates ? (node.templates.map(template => `${template.name || 'unnamed'}=${template.vmid}`).join(', ') || 'none') : 'unavailable' }}{{ node.error ? ` — ${node.error}` : '' }}
             </li>
           </ul>
@@ -890,6 +971,7 @@ export default {
         <div class="col span-6">
           <!-- Memory balloon -->
           <UnitInput
+            v-if="!currentValue.placementEnabled"
             type="number"
             :mode="mode"
             :disabled="disabled || (templates != null && !currentValue.template)"
@@ -901,6 +983,7 @@ export default {
             step="256"
             :max="currentValue.memory != '' ? currentValue.memory : undefined"
           />
+          <p v-else class="text-muted">Memory ballooning is disabled for placement-managed VMs.</p>
         </div>
       </div>
 

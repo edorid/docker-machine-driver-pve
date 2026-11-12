@@ -1,6 +1,7 @@
 nodeDriver:
   url: ""
   checksum: ""
+  whitelistDomains: []
 uiPlugin:
   endpoint: ""
 placement:
@@ -25,3 +26,12 @@ placement:
       limits:
         cpu: 100m
         memory: 64Mi
+  inventoryAPI:
+    enabled: false
+    allowedProxmoxHosts: []
+    serviceName: pve-placement-inventory
+    apiServiceName: v1alpha1.inventory.pve.edorid.github.io
+    certificateName: pve-placement-inventory
+    servingIssuerName: pve-placement-inventory-ca
+    selfSignedIssuerName: pve-placement-inventory-selfsigned
+    caCertificateName: pve-placement-inventory-ca

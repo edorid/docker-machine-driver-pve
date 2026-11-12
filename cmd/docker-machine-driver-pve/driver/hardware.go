@@ -32,7 +32,11 @@ func (d *Driver) setupHardware(ctx context.Context) error {
 		})
 	}
 
-	if d.MemoryBalloon != nil {
+	if d.PlacementGroup != "" {
+		// Placement templates are validated with fixed memory; preserve legacy
+		// ballooning behavior for non-placement machines.
+		options = append(options, proxmox.VirtualMachineOption{Name: "balloon", Value: 0})
+	} else if d.MemoryBalloon != nil {
 		options = append(options, proxmox.VirtualMachineOption{
 			Name:  "balloon",
 			Value: *d.MemoryBalloon,

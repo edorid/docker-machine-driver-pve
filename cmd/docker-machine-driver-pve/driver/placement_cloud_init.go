@@ -83,14 +83,68 @@ func (d *Driver) setupNativeCloudInit(ctx context.Context) error {
 	options := []proxmox.VirtualMachineOption{
 		{Name: "ciuser", Value: d.SSHUser},
 		{Name: "sshkeys", Value: strings.TrimSpace(string(publicKey))},
-		{Name: "ipconfig" + strconv.Itoa(interfaceNumber), Value: "ip=dhcp"},
 	}
 	return d.runTaskOnCurrentMachine(ctx, func(ctx context.Context, machine *proxmox.VirtualMachine) (*proxmox.Task, error) {
 		if machine.VirtualMachineConfig == nil || !hasCloudInitDisk(machine.VirtualMachineConfig) {
 			return nil, errors.New("cloned VM has no Proxmox cloud-init drive")
 		}
+		if err := requireDynamicCloudInitAddress(machine.VirtualMachineConfig, d.NetworkInterfaceName, interfaceNumber); err != nil {
+			return nil, err
+		}
 		return machine.Config(ctx, options...)
 	})
+}
+
+func requireDynamicCloudInitAddress(config *proxmox.VirtualMachineConfig, interfaceName string, interfaceNumber int) error {
+	if _, found := config.MergeNets()[interfaceName]; !found {
+		return errors.New("configured placement network interface is missing from cloned template")
+	}
+	address := config.MergeIPConfigs()["ipconfig"+strconv.Itoa(interfaceNumber)]
+	ipv4Dynamic, ipv6Dynamic := false, true
+	for _, option := range strings.Split(address, ",") {
+		key, value, found := strings.Cut(strings.TrimSpace(option), "=")
+		if !found {
+			continue
+		}
+		switch key {
+		case "ip":
+			if value != "dhcp" || ipv4Dynamic {
+				return errors.New("placement template must configure dynamic addressing with ip=dhcp")
+			}
+			ipv4Dynamic = true
+		case "ip6":
+			if value != "dhcp" || !ipv6Dynamic {
+				return errors.New("placement template must use ip6=dhcp when IPv6 cloud-init addressing is configured")
+			}
+			ipv6Dynamic = false
+		}
+	}
+	if ipv4Dynamic {
+		return nil
+	}
+	return errors.New("placement template has no verifiable dynamic cloud-init address")
+}
+
+func placementNetworkInterface(config *proxmox.VirtualMachineConfig) (string, error) {
+	networks := config.MergeNets()
+	name := ""
+	if networks["net0"] != "" {
+		name = "net0"
+	} else if len(networks) == 1 {
+		for candidate := range networks {
+			name = candidate
+		}
+	} else {
+		return "", errors.New("placement template network interface is missing or ambiguous")
+	}
+	number, err := networkInterfaceNumber(name)
+	if err != nil {
+		return "", err
+	}
+	if err := requireDynamicCloudInitAddress(config, name, number); err != nil {
+		return "", err
+	}
+	return name, nil
 }
 
 func (d *Driver) resizePlacedBootDisk(ctx context.Context) error {

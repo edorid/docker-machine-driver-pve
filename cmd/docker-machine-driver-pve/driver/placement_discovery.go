@@ -240,10 +240,11 @@ func (d *Driver) inspectPlacementTemplate(ctx context.Context, node *proxmox.Nod
 	if err != nil {
 		return vmid, false, false, 0, 0, fmt.Errorf("read template disk evidence: %w", err)
 	}
-	device, found := template.VirtualMachineConfig.MergeNets()[d.NetworkInterfaceName]
-	if !found {
+	interfaceName, err := placementNetworkInterface(template.VirtualMachineConfig)
+	if err != nil {
 		return vmid, true, false, diskBytes, bootDiskBytes, nil
 	}
+	device := template.VirtualMachineConfig.MergeNets()[interfaceName]
 	bridge := configValue(device, "bridge")
 	return vmid, true, bridge != "" && bridges[bridge], diskBytes, bootDiskBytes, nil
 }

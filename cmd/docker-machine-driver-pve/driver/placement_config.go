@@ -65,11 +65,11 @@ func (d *Driver) setPlacementConfig(opts drivers.DriverOptions) error {
 	if !dnsLabel(d.PlacementLedgerNamespace) || !dnsLabel(d.PlacementLedgerName) || !printableIdentity(d.PlacementClusterID) {
 		return errors.New("placement ledger namespace/name and cluster ID are invalid")
 	}
-	if _, err := networkInterfaceNumber(d.NetworkInterfaceName); err != nil {
-		return err
-	}
 	if !linuxUserName.MatchString(d.SSHUser) {
 		return errors.New("placement SSH user must be a valid Linux account name")
+	}
+	if !d.PlacementGuestReady {
+		return errors.New("placement requires operator confirmation that selected guest templates provide SSH and passwordless sudo")
 	}
 	return nil
 }

@@ -35,7 +35,7 @@ func TestDiscoverPlacementBuildsCompleteSingleNodeSnapshot(t *testing.T) {
 		case "/api2/json/nodes/pve1/qemu/900/config":
 			payload = map[string]any{
 				"template": 1, "agent": "1", "boot": "order=scsi0;net0", "scsi0": "local-lvm:vm-900-disk-0,size=32G",
-				"ide2": "local-lvm:cloudinit", "net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0",
+				"ide2": "local-lvm:cloudinit", "net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0", "ipconfig0": "ip=dhcp",
 			}
 		default:
 			t.Errorf("unexpected Proxmox API path %s", request.URL.Path)

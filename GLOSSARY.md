@@ -39,6 +39,9 @@ The first supported VM disk in a template's configured boot order. Its requested
 **Placement inventory**:
 The complete set of VMs and pending placements relevant to a placement policy, including members in other resource pools.
 
+**Discovered inventory**:
+The Proxmox hosts, storages, templates and resource pools shown as advisory choices when configuring a machine pool. It is distinct from the placement inventory used to admit a machine.
+
 **Allocated capacity**:
 CPU and memory committed to existing VMs, including stopped VMs, and pending placements; distinct from current utilization.
 

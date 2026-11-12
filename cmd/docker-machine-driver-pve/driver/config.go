@@ -12,32 +12,33 @@ import (
 
 // Available flags.
 const (
-	flagURL              = "pve-url"
-	flagInsecureTLS      = "pve-insecure-tls"
-	flagTokenID          = "pve-token-id" //nolint:gosec // False-positive
-	flagTokenSecret      = "pve-token-secret"
-	flagResourcePool     = "pve-resource-pool"
-	flagTemplateID       = "pve-template"
-	flagISODevice        = "pve-iso-device"
-	flagNetworkInterface = "pve-network-interface"
-	flagSSHUser          = "pve-ssh-user"
-	flagSSHPort          = "pve-ssh-port"
-	flagProcessorSockets = "pve-processor-sockets"
-	flagProcessorCores   = "pve-processor-cores"
-	flagMemory           = "pve-memory"
-	flagMemoryBalloon    = "pve-memory-balloon"
-	flagFullClone        = "pve-full-clone"
-	flagTags             = "pve-tags"
-	flagPlacementGroup   = "pve-placement-group"
-	flagPlacementHosts   = "pve-placement-hosts"
-	flagPlacementStorage = "pve-placement-storages"
-	flagPlacementTpls    = "pve-placement-templates"
-	flagDiskSize         = "pve-disk-size-gib"
-	flagLedgerNamespace  = "pve-placement-ledger-namespace"
-	flagLedgerName       = "pve-placement-ledger-name"
-	flagClusterID        = "pve-placement-cluster-id"
-	flagRancherCluster   = "pve-rancher-cluster-name"
-	flagRancherPool      = "pve-rancher-machine-pool"
+	flagURL                 = "pve-url"
+	flagInsecureTLS         = "pve-insecure-tls"
+	flagTokenID             = "pve-token-id" //nolint:gosec // False-positive
+	flagTokenSecret         = "pve-token-secret"
+	flagResourcePool        = "pve-resource-pool"
+	flagTemplateID          = "pve-template"
+	flagISODevice           = "pve-iso-device"
+	flagNetworkInterface    = "pve-network-interface"
+	flagSSHUser             = "pve-ssh-user"
+	flagSSHPort             = "pve-ssh-port"
+	flagProcessorSockets    = "pve-processor-sockets"
+	flagProcessorCores      = "pve-processor-cores"
+	flagMemory              = "pve-memory"
+	flagMemoryBalloon       = "pve-memory-balloon"
+	flagFullClone           = "pve-full-clone"
+	flagTags                = "pve-tags"
+	flagPlacementGroup      = "pve-placement-group"
+	flagPlacementHosts      = "pve-placement-hosts"
+	flagPlacementStorage    = "pve-placement-storages"
+	flagPlacementTpls       = "pve-placement-templates"
+	flagDiskSize            = "pve-disk-size-gib"
+	flagLedgerNamespace     = "pve-placement-ledger-namespace"
+	flagLedgerName          = "pve-placement-ledger-name"
+	flagClusterID           = "pve-placement-cluster-id"
+	flagRancherCluster      = "pve-rancher-cluster-name"
+	flagRancherPool         = "pve-rancher-machine-pool"
+	flagPlacementGuestReady = "pve-placement-guest-ready"
 )
 
 // Default values for flags.
@@ -103,6 +104,7 @@ type config struct {
 	PlacementClusterID       string
 	RancherClusterName       string
 	RancherMachinePool       string
+	PlacementGuestReady      bool
 }
 
 // GetCreateFlags implements drivers.Driver.
@@ -198,6 +200,7 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 		mcnflag.StringFlag{Name: flagClusterID, EnvVar: flagEnvVarFromFlagName(flagClusterID), Usage: "Stable administrator-assigned identity of this Proxmox cluster"},
 		mcnflag.StringFlag{Name: flagRancherCluster, EnvVar: flagEnvVarFromFlagName(flagRancherCluster), Usage: "Optional Rancher cluster name to add to VM tags"},
 		mcnflag.StringFlag{Name: flagRancherPool, EnvVar: flagEnvVarFromFlagName(flagRancherPool), Usage: "Optional Rancher machine-pool name to add to VM tags"},
+		mcnflag.BoolFlag{Name: flagPlacementGuestReady, EnvVar: flagEnvVarFromFlagName(flagPlacementGuestReady), Usage: "Operator confirms the selected guest templates support SSH and passwordless sudo"},
 	}
 }
 
@@ -236,7 +239,7 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	d.ISODeviceName = strings.ToLower(opts.String(flagISODevice))
 
 	d.NetworkInterfaceName = opts.String(flagNetworkInterface)
-	if d.NetworkInterfaceName == "" {
+	if d.NetworkInterfaceName == "" && strings.TrimSpace(opts.String(flagPlacementGroup)) == "" {
 		return fmt.Errorf("flag '--%s' is required", flagNetworkInterface)
 	}
 
@@ -295,6 +298,7 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	d.FullClone = opts.Bool(flagFullClone)
 
 	d.Tags = strings.Split(opts.String(flagTags), ",")
+	d.PlacementGuestReady = opts.Bool(flagPlacementGuestReady)
 	d.RancherClusterName = strings.TrimSpace(opts.String(flagRancherCluster))
 	d.RancherMachinePool = strings.TrimSpace(opts.String(flagRancherPool))
 	if err := d.setPlacementConfig(opts); err != nil {

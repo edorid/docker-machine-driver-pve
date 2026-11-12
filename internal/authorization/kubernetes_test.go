@@ -1,6 +1,9 @@
 package authorization
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -260,6 +263,100 @@ func TestJobListPaginatesAndUsesCurrentProjectedToken(t *testing.T) {
 
 func testKubeClient(server *httptest.Server) *kubeClient {
 	return &kubeClient{base: server.URL, client: server.Client(), token: "test"}
+}
+
+func TestAuthorizeSecretReadScopesReviewToCredential(t *testing.T) {
+	identity := requestIdentity{Username: "user-123", UID: "uid-123", Groups: []string{"team-a"}, Extra: map[string][]string{"scope": {"read"}}}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, subjectAccessReviewPath, request.URL.Path)
+		var body struct {
+			Spec struct {
+				User   string              `json:"user"`
+				UID    string              `json:"uid"`
+				Groups []string            `json:"groups"`
+				Extra  map[string][]string `json:"extra"`
+				Attrs  map[string]string   `json:"resourceAttributes"`
+			} `json:"spec"`
+		}
+		require.NoError(t, json.NewDecoder(request.Body).Decode(&body))
+		require.Equal(t, identity.Username, body.Spec.User)
+		require.Equal(t, identity.UID, body.Spec.UID)
+		require.Equal(t, identity.Groups, body.Spec.Groups)
+		require.Equal(t, identity.Extra, body.Spec.Extra)
+		require.Equal(t, map[string]string{
+			"namespace": "cattle-global-data", "verb": "get", "group": "", "resource": "secrets", "name": "cc-example",
+		}, body.Spec.Attrs)
+		_, _ = writer.Write([]byte(`{"status":{"allowed":true}}`))
+	}))
+	defer server.Close()
+	client := testKubeClient(server)
+	require.NoError(t, client.authorizeSecretRead(t.Context(), identity, "cattle-global-data", "cc-example"))
+}
+
+func TestIdentityFromAggregatedRequestRejectsUnverifiedOrIncompleteIdentity(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("X-Remote-User", "forged-user")
+	request.Header.Set("X-Remote-Group", "system:authenticated")
+	_, err := identityFromAggregatedRequest(request)
+	require.Error(t, err, "ordinary HTTP headers must not establish identity")
+
+	proxyCertificate := &x509.Certificate{Subject: pkix.Name{CommonName: "front-proxy-client"}}
+	request.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{proxyCertificate}, VerifiedChains: [][]*x509.Certificate{{proxyCertificate}}}
+	identity, err := identityFromAggregatedRequest(request)
+	require.NoError(t, err)
+	require.Equal(t, "forged-user", identity.Username, "a certificate name configured by the Kubernetes trust bundle is accepted")
+}
+
+func TestAuthorizeSecretReadFailsClosed(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = writer.Write([]byte(`{"status":{"allowed":true,"denied":true}}`))
+	}))
+	defer server.Close()
+	client := testKubeClient(server)
+	identity := requestIdentity{Username: "user-123", Groups: []string{"team-a"}}
+	require.Error(t, client.authorizeSecretRead(t.Context(), requestIdentity{}, "cattle-global-data", "cc-example"))
+	require.Error(t, client.authorizeSecretRead(t.Context(), identity, "other-namespace", "cc-example"))
+	require.Error(t, client.authorizeSecretRead(t.Context(), identity, "cattle-global-data", "cc-example"))
+	require.Equal(t, 1, calls)
+}
+
+func TestGetCloudCredentialAuthorizesBeforeReadingAndReturnsOnlyExpectedFields(t *testing.T) {
+	var sequence []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		sequence = append(sequence, request.Method+" "+request.URL.Path)
+		switch request.URL.Path {
+		case subjectAccessReviewPath:
+			_, _ = writer.Write([]byte(`{"status":{"allowed":true}}`))
+		case "/api/v1/namespaces/cattle-global-data/secrets/cc-example":
+			_, _ = writer.Write([]byte(`{"metadata":{"name":"cc-example","annotations":{"provisioning.cattle.io/driver":"pve"}},"data":{"pvecredentialConfig-url":"aHR0cHM6Ly9wcm94bW94LmV4YW1wbGU6ODAwNg==","pvecredentialConfig-insecureTls":"ZmFsc2U=","pvecredentialConfig-tokenId":"dXNlckBwYW0hYXBp","pvecredentialConfig-tokenSecret":"c2VjcmV0"}}`))
+		default:
+			t.Errorf("unexpected Kubernetes request %s %s", request.Method, request.URL.Path)
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	credential, err := testKubeClient(server).getCloudCredential(t.Context(), requestIdentity{Username: "u", Groups: []string{"g"}}, "cc-example")
+	require.NoError(t, err)
+	require.Equal(t, cloudCredential{URL: "https://proxmox.example:8006", TokenID: "user@pam!api", TokenSecret: "secret"}, credential)
+	require.Equal(t, []string{
+		"POST " + subjectAccessReviewPath,
+		"GET /api/v1/namespaces/cattle-global-data/secrets/cc-example",
+	}, sequence)
+}
+
+func TestGetCloudCredentialNeverReadsWhenAuthorizationIsDenied(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls++
+		require.Equal(t, subjectAccessReviewPath, request.URL.Path)
+		_, _ = writer.Write([]byte(`{"status":{"allowed":false,"denied":true}}`))
+	}))
+	defer server.Close()
+	_, err := testKubeClient(server).getCloudCredential(t.Context(), requestIdentity{Username: "u", Groups: []string{"g"}}, "cc-example")
+	require.Error(t, err)
+	require.Equal(t, 1, calls, "denied authorization must prevent the Secret GET")
 }
 
 func serverBinding(t *testing.T, job Job) RoleBinding {
