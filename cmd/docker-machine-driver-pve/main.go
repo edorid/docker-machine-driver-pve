@@ -6,8 +6,8 @@ import (
 	"os"
 	"runtime/debug"
 
-	"github.com/rancher/machine/libmachine/drivers/plugin"
 	"github.com/edorid/docker-machine-driver-pve/cmd/docker-machine-driver-pve/driver"
+	"github.com/rancher/machine/libmachine/drivers/plugin"
 )
 
 func main() {

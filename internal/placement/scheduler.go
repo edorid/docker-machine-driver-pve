@@ -48,13 +48,15 @@ type CapacityPolicy struct {
 
 func (p CapacityPolicy) Validate() error {
 	if !p.Configured {
-		return fmt.Errorf("host capacity reserve policy is not configured")
+		return errors.New("host capacity reserve policy is not configured")
 	}
+
 	for host := range p.Hosts {
 		if !validHost(host) {
-			return fmt.Errorf("host capacity reserve has an invalid host override")
+			return errors.New("host capacity reserve has an invalid host override")
 		}
 	}
+
 	return nil
 }
 
@@ -62,6 +64,7 @@ func (p CapacityPolicy) ForHost(host string) CapacityReserve {
 	if reserve, found := p.Hosts[host]; found {
 		return reserve
 	}
+
 	return p.Default
 }
 
@@ -167,6 +170,7 @@ func Select(ctx context.Context, policy Policy, request Resources, inventory Sna
 	if !inventory.Complete || !consistent(inventory, commitments) {
 		return decision, ErrIncompleteInventory
 	}
+
 	if err := inventory.CapacityPolicy.Validate(); err != nil {
 		return decision, fmt.Errorf("validate host capacity reserves: %w", err)
 	}
@@ -210,6 +214,7 @@ func Select(ctx context.Context, policy Policy, request Resources, inventory Sna
 				decision.Excluded = append(decision.Excluded, Exclusion{Node: host, Storage: storageID, Reason: reason})
 				continue
 			}
+
 			reserve := inventory.CapacityPolicy.ForHost(host)
 
 			decision.Candidates = append(decision.Candidates, Candidate{
@@ -270,6 +275,7 @@ func compareCandidates(left, right Candidate) int {
 func hostExclusion(node Node, found bool, template int, reserve CapacityReserve, request Resources, pending *hostUsage) string {
 	guestCPUCapacity := remaining(node.CPU, reserve.CPU)
 	guestMemoryCapacity := remaining(node.MemoryBytes, reserve.MemoryBytes)
+
 	switch {
 	case !found:
 		return "host_missing"

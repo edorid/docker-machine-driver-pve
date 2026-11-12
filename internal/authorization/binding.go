@@ -5,10 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 )
 
 const (
+	managedValue         = "true"
 	managedLabel         = "placement.pve.edorid.github.io/managed"
 	clusterIDAnnotation  = "placement.pve.edorid.github.io/cluster-id"
 	ledgerNameAnnotation = "placement.pve.edorid.github.io/ledger-name"
@@ -54,14 +54,15 @@ func NewRoleBinding(decision BindingDecision) (RoleBinding, error) {
 	if !decision.Ensure || decision.Revoke || !validDNS(decision.SourceNamespace) ||
 		!validDNS(decision.ServiceAccount) || !validLedgerRef(decision.Ledger) ||
 		decision.BindingName != BindingName(decision.SourceNamespace, decision.ServiceAccount) {
-		return RoleBinding{}, fmt.Errorf("invalid role-binding decision")
+		return RoleBinding{}, errors.New("invalid role-binding decision")
 	}
+
 	return RoleBinding{
 		APIVersion: "rbac.authorization.k8s.io/v1",
 		Kind:       "RoleBinding",
 		Metadata: BindingMetadata{
 			Name: decision.BindingName, Namespace: decision.Ledger.Namespace,
-			Labels: map[string]string{managedLabel: "true"},
+			Labels: map[string]string{managedLabel: managedValue},
 			Annotations: map[string]string{
 				clusterIDAnnotation:  decision.Ledger.ClusterID,
 				ledgerNameAnnotation: decision.Ledger.Name,
@@ -79,7 +80,7 @@ func NewRoleBinding(decision BindingDecision) (RoleBinding, error) {
 func ValidateExisting(existing RoleBinding, wanted RoleBinding) error {
 	if existing.Metadata.UID == "" || existing.Metadata.Name != wanted.Metadata.Name ||
 		existing.Metadata.Namespace != wanted.Metadata.Namespace ||
-		existing.Metadata.Labels[managedLabel] != "true" ||
+		existing.Metadata.Labels[managedLabel] != managedValue ||
 		existing.Metadata.Annotations[clusterIDAnnotation] != wanted.Metadata.Annotations[clusterIDAnnotation] ||
 		existing.Metadata.Annotations[ledgerNameAnnotation] != wanted.Metadata.Annotations[ledgerNameAnnotation] ||
 		existing.Metadata.Annotations[sourceNSAnnotation] != wanted.Metadata.Annotations[sourceNSAnnotation] ||
@@ -87,6 +88,7 @@ func ValidateExisting(existing RoleBinding, wanted RoleBinding) error {
 		!sameSubject(existing.Subjects, wanted.Subjects) || existing.RoleRef != wanted.RoleRef {
 		return ErrBindingMismatch
 	}
+
 	return nil
 }
 
@@ -109,18 +111,20 @@ type PolicyRule struct {
 func LedgerRoleName(ref LedgerRef) string {
 	identity := ref.Namespace + "/" + ref.Name
 	digest := sha256.Sum256([]byte(identity))
+
 	return "pve-ledger-" + hex.EncodeToString(digest[:12])
 }
 
 func NewLedgerRole(ref LedgerRef) (LedgerRole, error) {
 	if !validLedgerRef(ref) {
-		return LedgerRole{}, fmt.Errorf("invalid Proxmox ledger reference")
+		return LedgerRole{}, errors.New("invalid Proxmox ledger reference")
 	}
+
 	return LedgerRole{
 		APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role",
 		Metadata: BindingMetadata{
 			Name: LedgerRoleName(ref), Namespace: ref.Namespace,
-			Labels:      map[string]string{managedLabel: "true"},
+			Labels:      map[string]string{managedLabel: managedValue},
 			Annotations: map[string]string{clusterIDAnnotation: ref.ClusterID, ledgerNameAnnotation: ref.Name},
 		},
 		Rules: []PolicyRule{{
@@ -132,12 +136,13 @@ func NewLedgerRole(ref LedgerRef) (LedgerRole, error) {
 
 func ValidateExistingRole(existing, wanted LedgerRole) error {
 	if existing.Metadata.UID == "" || existing.Metadata.Name != wanted.Metadata.Name ||
-		existing.Metadata.Namespace != wanted.Metadata.Namespace || existing.Metadata.Labels[managedLabel] != "true" ||
+		existing.Metadata.Namespace != wanted.Metadata.Namespace || existing.Metadata.Labels[managedLabel] != managedValue ||
 		existing.Metadata.Annotations[clusterIDAnnotation] != wanted.Metadata.Annotations[clusterIDAnnotation] ||
 		existing.Metadata.Annotations[ledgerNameAnnotation] != wanted.Metadata.Annotations[ledgerNameAnnotation] ||
 		len(existing.Rules) != 1 || !equalRule(existing.Rules[0], wanted.Rules[0]) {
 		return ErrBindingMismatch
 	}
+
 	return nil
 }
 
@@ -150,11 +155,13 @@ func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
 	}
+
 	for index := range left {
 		if left[index] != right[index] {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -162,6 +169,7 @@ func sameSubject(left, right []BindingSubject) bool {
 	if len(left) != 1 || len(right) != 1 {
 		return false
 	}
+
 	return left[0] == right[0]
 }
 
@@ -170,5 +178,6 @@ func decodeRoleBinding(data []byte) (RoleBinding, error) {
 	if err := json.Unmarshal(data, &binding); err != nil {
 		return RoleBinding{}, ErrBindingMismatch
 	}
+
 	return binding, nil
 }

@@ -259,20 +259,23 @@ func TestSaturatingResourceArithmetic(t *testing.T) {
 func TestCentralHostReservesApplyAcrossPoolsAndUnsetBlocks(t *testing.T) {
 	policy, inventory := testPolicy(), testInventory()
 	inventory.CapacityPolicy.Default = CapacityReserve{CPU: 90, MemoryBytes: 800}
-	decision, err := Select(context.Background(), policy, testResources(), inventory, nil)
+	decision, err := Select(t.Context(), policy, testResources(), inventory, nil)
 	require.NoError(t, err)
 	require.Equal(t, "host-a", decision.Selected.Node)
 	require.Equal(t, uint64(8), decision.Selected.RemainingCPU)
 	require.Equal(t, uint64(100), decision.Selected.RemainingMemory)
+
 	for index := range inventory.Nodes {
 		inventory.Nodes[index].CPU = 100
 	}
+
 	inventory.CapacityPolicy.Hosts["host-a"] = CapacityReserve{CPU: 100, MemoryBytes: 1000}
 	inventory.CapacityPolicy.Hosts["host-b"] = CapacityReserve{}
-	decision, err = Select(context.Background(), policy, testResources(), inventory, nil)
+	decision, err = Select(t.Context(), policy, testResources(), inventory, nil)
 	require.NoError(t, err)
 	require.Equal(t, "host-b", decision.Selected.Node)
+
 	inventory.CapacityPolicy.Configured = false
-	_, err = Select(context.Background(), policy, testResources(), inventory, nil)
+	_, err = Select(t.Context(), policy, testResources(), inventory, nil)
 	require.ErrorContains(t, err, "reserve policy is not configured")
 }

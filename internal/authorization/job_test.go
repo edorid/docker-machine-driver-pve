@@ -7,6 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testRoleUID = "role-uid"
+
 func placementJob() Job {
 	return Job{
 		Namespace: "fleet-default", Name: "node-machine-provision", UID: "2fcb3180-97a1-45fd-9862-cad297c667a2",
@@ -31,6 +33,7 @@ func TestPlacementCreateJobGetsStableLedgerBinding(t *testing.T) {
 	require.False(t, decision.Revoke)
 	require.Equal(t, LedgerRef{Namespace: "shared-ledgers", Name: "proxmox-placement-ledger", ClusterID: "proxmox-prod"}, decision.Ledger)
 	require.Equal(t, BindingName("fleet-default", "node-machine-provision"), decision.BindingName)
+
 	job.UID = "f2ed5fb0-d66f-4f84-8ab5-88bd54bed973" // Rancher retry Job, same machine SA
 	retry, err := Evaluate(job, nil)
 	require.NoError(t, err)
@@ -42,10 +45,12 @@ func TestUnrelatedAndLegacyJobsAreIgnored(t *testing.T) {
 	delete(job.Labels, InfraMachineKind)
 	_, err := Evaluate(job, nil)
 	require.ErrorIs(t, err, ErrNotPlacementJob)
+
 	job = placementJob()
 	job.Arguments = []string{"create", "--driver=pve", "node"}
 	_, err = Evaluate(job, nil)
 	require.ErrorIs(t, err, ErrNotPlacementJob)
+
 	job = placementJob()
 	job.Arguments = []string{"create", "--driver=other", "node"}
 	_, err = Evaluate(job, nil)
@@ -80,12 +85,13 @@ func TestCreateRejectsAmbiguousOrMalformedLedgerArgs(t *testing.T) {
 func TestRemoveReusesBindingAndRevokesOnlyAfterSuccess(t *testing.T) {
 	job := placementJob()
 	ref := LedgerRef{Namespace: "shared-ledgers", Name: "proxmox-placement-ledger", ClusterID: "proxmox-prod"}
-	job.Labels[InfraJobRemove] = "true"
+	job.Labels[InfraJobRemove] = trueLabelValue
 	job.Arguments = []string{"--secret-namespace=fleet-default", "rm", "-y", "--update-config", "node"}
 	decision, err := Evaluate(job, &ref)
 	require.NoError(t, err)
 	require.True(t, decision.Ensure)
 	require.False(t, decision.Revoke)
+
 	job.Succeeded = 1
 	decision, err = Evaluate(job, &ref)
 	require.NoError(t, err)
@@ -100,12 +106,14 @@ func TestInvalidJobIdentityAndLabelsFailClosed(t *testing.T) {
 	job.ServiceAccount = ""
 	_, err := Evaluate(job, nil)
 	require.ErrorIs(t, err, ErrInvalidJob)
+
 	job = placementJob()
 	job.Labels[InfraJobRemove] = "maybe"
 	_, err = Evaluate(job, nil)
 	require.ErrorIs(t, err, ErrInvalidJob)
+
 	job = placementJob()
-	job.Labels[InfraJobRemove] = "true"
+	job.Labels[InfraJobRemove] = trueLabelValue
 	ref := LedgerRef{Namespace: "shared-ledgers", Name: "proxmox-placement-ledger", ClusterID: "proxmox-prod"}
 	_, err = Evaluate(job, &ref)
 	require.NoError(t, err)
@@ -124,6 +132,7 @@ func TestRoleBindingIsLimitedToOneLedgerAndOneServiceAccount(t *testing.T) {
 	require.NoError(t, err)
 	existing, err := decodeRoleBinding(wanted)
 	require.NoError(t, err)
+
 	existing.Metadata.UID = "server-uid"
 	require.NoError(t, ValidateExisting(existing, binding))
 	existing.Metadata.Annotations[clusterIDAnnotation] = "other-cluster"
@@ -131,15 +140,18 @@ func TestRoleBindingIsLimitedToOneLedgerAndOneServiceAccount(t *testing.T) {
 	existing.Metadata.Annotations[clusterIDAnnotation] = decision.Ledger.ClusterID
 	existing.Subjects[0].Name = "other-service-account"
 	require.ErrorIs(t, ValidateExisting(existing, binding), ErrBindingMismatch)
+
 	role, err := NewLedgerRole(decision.Ledger)
 	require.NoError(t, err)
 	require.Equal(t, []string{"proxmox-placement-ledger"}, role.Rules[0].ResourceNames)
 	require.Equal(t, []string{"get", "update"}, role.Rules[0].Verbs)
 	roleData, err := json.Marshal(role)
 	require.NoError(t, err)
+
 	var savedRole LedgerRole
+
 	require.NoError(t, json.Unmarshal(roleData, &savedRole))
-	savedRole.Metadata.UID = "role-uid"
+	savedRole.Metadata.UID = testRoleUID
 	require.NoError(t, ValidateExistingRole(savedRole, role))
 	savedRole.Rules[0].ResourceNames = []string{"*"}
 	require.ErrorIs(t, ValidateExistingRole(savedRole, role), ErrBindingMismatch)

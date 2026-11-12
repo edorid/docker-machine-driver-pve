@@ -1,7 +1,6 @@
 package authorization
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,76 +11,104 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testJobPath = jobCollectionPath
+
+//nolint:cyclop // The mock exercises the full reconciliation protocol.
 func TestReconcileCreateRecoversLostRoleAndBindingResponses(t *testing.T) {
 	job := placementJob()
-	jobWire, err := json.Marshal(map[string]any{"items": []any{map[string]any{
-		"metadata": map[string]any{"namespace": job.Namespace, "name": job.Name, "uid": job.UID, "labels": job.Labels},
-		"spec": map[string]any{"template": map[string]any{"spec": map[string]any{
-			"serviceAccountName": job.ServiceAccount,
-			"containers":         []any{map[string]any{"name": "machine", "args": job.Arguments}},
-		}}}},
+	jobWire, err := json.Marshal(map[string]any{"items": []any{
+		map[string]any{
+			"metadata": map[string]any{"namespace": job.Namespace, "name": job.Name, "uid": job.UID, "labels": job.Labels},
+			"spec": map[string]any{"template": map[string]any{"spec": map[string]any{
+				"serviceAccountName": job.ServiceAccount,
+				"containers":         []any{map[string]any{"name": "machine", "args": job.Arguments}},
+			}}},
+		},
 	}})
 	require.NoError(t, err)
+
 	roleCreated, bindingCreated := false, false
 	loseRoleResponse, loseBindingResponse := true, true
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/apis/batch/v1/jobs":
-			_, _ = w.Write(jobWire)
-		case r.Method == http.MethodGet && r.URL.Path == "/apis/rbac.authorization.k8s.io/v1/rolebindings":
-			_, _ = w.Write([]byte(`{"items":[]}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/apis/placement.pve.edorid.github.io/v1alpha1/namespaces/shared-ledgers/proxmoxplacementledgers/proxmox-placement-ledger":
-			_, _ = w.Write([]byte(`{"apiVersion":"placement.pve.edorid.github.io/v1alpha1","kind":"ProxmoxPlacementLedger","spec":{"clusterId":"proxmox-prod"}}`))
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/roles/"+LedgerRoleName(LedgerRef{Namespace: "shared-ledgers", Name: "proxmox-placement-ledger"})):
+		case request.Method == http.MethodGet && request.URL.Path == testJobPath:
+			_, _ = writer.Write(jobWire)
+		case request.Method == http.MethodGet && request.URL.Path == roleBindingCollectionPath:
+			_, _ = writer.Write([]byte(`{"items":[]}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/apis/placement.pve.edorid.github.io/v1alpha1/namespaces/shared-ledgers/proxmoxplacementledgers/proxmox-placement-ledger":
+			_, _ = writer.Write([]byte(`{"apiVersion":"placement.pve.edorid.github.io/v1alpha1","kind":"ProxmoxPlacementLedger","spec":{"clusterId":"proxmox-prod"}}`))
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/roles/"+LedgerRoleName(LedgerRef{Namespace: "shared-ledgers", Name: "proxmox-placement-ledger"})):
 			if roleCreated {
-				_ = json.NewEncoder(w).Encode(serverRole(t, r))
+				_ = json.NewEncoder(writer).Encode(serverRole(t))
 				return
 			}
-			http.NotFound(w, r)
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/roles"):
+
+			http.NotFound(writer, request)
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/roles"):
 			var role LedgerRole
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&role))
-			role.Metadata.UID = "role-uid"
+
+			if err := json.NewDecoder(request.Body).Decode(&role); err != nil {
+				t.Errorf("decode posted Role: %v", err)
+				return
+			}
+
+			role.Metadata.UID = testRoleUID
 			roleCreated = true
+
 			if loseRoleResponse {
 				loseRoleResponse = false
-				http.Error(w, "response lost", http.StatusInternalServerError)
+
+				http.Error(writer, "response lost", http.StatusInternalServerError)
+
 				return
 			}
-			w.WriteHeader(http.StatusCreated)
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/rolebindings/"+BindingName(job.Namespace, job.ServiceAccount)):
+
+			writer.WriteHeader(http.StatusCreated)
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/rolebindings/"+BindingName(job.Namespace, job.ServiceAccount)):
 			if bindingCreated {
-				_ = json.NewEncoder(w).Encode(serverBinding(t, job))
+				_ = json.NewEncoder(writer).Encode(serverBinding(t, job))
 				return
 			}
-			http.NotFound(w, r)
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/rolebindings"):
+
+			http.NotFound(writer, request)
+		case request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/rolebindings"):
 			var binding RoleBinding
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&binding))
+
+			if err := json.NewDecoder(request.Body).Decode(&binding); err != nil {
+				t.Errorf("decode posted RoleBinding: %v", err)
+				return
+			}
+
 			bindingCreated = true
+
 			if loseBindingResponse {
 				loseBindingResponse = false
-				http.Error(w, "response lost", http.StatusInternalServerError)
+
+				http.Error(writer, "response lost", http.StatusInternalServerError)
+
 				return
 			}
-			w.WriteHeader(http.StatusCreated)
+
+			writer.WriteHeader(http.StatusCreated)
 		default:
-			t.Errorf("unexpected Kubernetes request: %s %s", r.Method, r.URL.String())
-			http.NotFound(w, r)
+			t.Errorf("unexpected Kubernetes request: %s %s", request.Method, request.URL.String())
+			http.NotFound(writer, request)
 		}
 	}))
 	defer server.Close()
 	client := testKubeClient(server)
-	require.Error(t, client.reconcile(context.Background())) // Role create succeeded but response was lost.
+	require.Error(t, client.reconcile(t.Context())) // Role create succeeded but response was lost.
 	require.True(t, roleCreated)
-	require.Error(t, client.reconcile(context.Background())) // Binding create succeeded but response was lost.
+	require.Error(t, client.reconcile(t.Context())) // Binding create succeeded but response was lost.
 	require.True(t, bindingCreated)
-	require.NoError(t, client.reconcile(context.Background()))
+	require.NoError(t, client.reconcile(t.Context()))
 }
 
+//nolint:cyclop // The mock covers multiple removal outcomes.
 func TestReconcileRemoveKeepsBindingUntilSuccessAndHandlesLostDelete(t *testing.T) {
 	job := placementJob()
-	job.Labels[InfraJobRemove] = "true"
+	job.Labels[InfraJobRemove] = trueLabelValue
 	job.Arguments = []string{"rm", "-y", "--update-config", "node"}
 	jobJSON, err := json.Marshal(map[string]any{"items": []any{map[string]any{
 		"metadata": map[string]any{"namespace": job.Namespace, "name": job.Name, "uid": job.UID, "labels": job.Labels},
@@ -94,90 +121,128 @@ func TestReconcileRemoveKeepsBindingUntilSuccessAndHandlesLostDelete(t *testing.
 	binding := serverBinding(t, placementJob())
 	bindingJSON, err := json.Marshal(map[string]any{"items": []RoleBinding{binding}})
 	require.NoError(t, err)
+
 	deleteCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/apis/batch/v1/jobs":
-			_, _ = w.Write(jobJSON)
-		case r.Method == http.MethodGet && r.URL.Path == "/apis/rbac.authorization.k8s.io/v1/rolebindings":
-			_, _ = w.Write(bindingJSON)
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/rolebindings/"+binding.Metadata.Name):
-			_ = json.NewEncoder(w).Encode(binding)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/proxmoxplacementledgers/"):
-			_, _ = w.Write([]byte(`{"apiVersion":"placement.pve.edorid.github.io/v1alpha1","kind":"ProxmoxPlacementLedger","spec":{"clusterId":"proxmox-prod"}}`))
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/roles/"):
-			_ = json.NewEncoder(w).Encode(serverRole(t, r))
-		case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/rolebindings/"+binding.Metadata.Name):
+		case request.Method == http.MethodGet && request.URL.Path == testJobPath:
+			_, _ = writer.Write(jobJSON)
+		case request.Method == http.MethodGet && request.URL.Path == roleBindingCollectionPath:
+			_, _ = writer.Write(bindingJSON)
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/rolebindings/"+binding.Metadata.Name):
+			_ = json.NewEncoder(writer).Encode(binding)
+		case request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/proxmoxplacementledgers/"):
+			_, _ = writer.Write([]byte(`{"apiVersion":"placement.pve.edorid.github.io/v1alpha1","kind":"ProxmoxPlacementLedger","spec":{"clusterId":"proxmox-prod"}}`))
+		case request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/roles/"):
+			_ = json.NewEncoder(writer).Encode(serverRole(t))
+		case request.Method == http.MethodDelete && strings.HasSuffix(request.URL.Path, "/rolebindings/"+binding.Metadata.Name):
 			deleteCount++
-			var options map[string]any
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&options))
-			require.Equal(t, binding.Metadata.UID, options["preconditions"].(map[string]any)["uid"])
-			w.WriteHeader(http.StatusOK)
-		case strings.Contains(r.URL.Path, "/proxmoxplacementledgers/"):
+
+			var options struct {
+				Preconditions struct {
+					UID string `json:"uid"`
+				} `json:"preconditions"`
+			}
+
+			if err := json.NewDecoder(request.Body).Decode(&options); err != nil {
+				t.Errorf("decode DeleteOptions: %v", err)
+				return
+			}
+
+			if options.Preconditions.UID != binding.Metadata.UID {
+				t.Errorf("delete UID precondition = %q, want %q", options.Preconditions.UID, binding.Metadata.UID)
+			}
+
+			writer.WriteHeader(http.StatusOK)
+		case strings.Contains(request.URL.Path, "/proxmoxplacementledgers/"):
 			t.Error("successful remove must not need the ledger")
-			http.NotFound(w, r)
+			http.NotFound(writer, request)
 		default:
-			t.Errorf("unexpected Kubernetes request: %s %s", r.Method, r.URL.String())
-			http.NotFound(w, r)
+			t.Errorf("unexpected Kubernetes request: %s %s", request.Method, request.URL.String())
+			http.NotFound(writer, request)
 		}
 	}))
 	defer server.Close()
 	client := testKubeClient(server)
-	require.NoError(t, client.reconcile(context.Background()))
+	require.NoError(t, client.reconcile(t.Context()))
 	require.Zero(t, deleteCount, "failed remove must retain access")
 
 	jobJSON = replaceSucceeded(t, jobJSON)
 	// Simulate a delete whose server-side result is a success even if its response is lost.
 	loseResponse := true
-	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/apis/batch/v1/jobs" {
-			_, _ = w.Write(jobJSON)
+	server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == testJobPath {
+			_, _ = writer.Write(jobJSON)
 			return
 		}
-		if r.Method == http.MethodGet && r.URL.Path == "/apis/rbac.authorization.k8s.io/v1/rolebindings" {
+
+		if request.Method == http.MethodGet && request.URL.Path == roleBindingCollectionPath {
 			if deleteCount > 0 {
-				_, _ = w.Write([]byte(`{"items":[]}`))
+				_, _ = writer.Write([]byte(`{"items":[]}`))
 			} else {
-				_, _ = w.Write(bindingJSON)
+				_, _ = writer.Write(bindingJSON)
 			}
+
 			return
 		}
-		if r.Method == http.MethodDelete {
+
+		if request.Method == http.MethodDelete {
 			deleteCount++
+
 			if loseResponse {
 				loseResponse = false
-				http.Error(w, "response lost", http.StatusInternalServerError)
+
+				http.Error(writer, "response lost", http.StatusInternalServerError)
+
 				return
 			}
-			w.WriteHeader(http.StatusOK)
+
+			writer.WriteHeader(http.StatusOK)
+
 			return
 		}
-		http.NotFound(w, r)
+
+		http.NotFound(writer, request)
 	})
-	require.Error(t, client.reconcile(context.Background()))
+
+	require.Error(t, client.reconcile(t.Context()))
 	jobJSON = replaceSucceeded(t, jobJSON)
-	require.NoError(t, client.reconcile(context.Background()))
+	require.NoError(t, client.reconcile(t.Context()))
 	require.Equal(t, 1, deleteCount)
 }
 
+//nolint:varnamelen // The HTTP handler parameters follow net/http's conventional names.
 func TestJobListPaginatesAndUsesCurrentProjectedToken(t *testing.T) {
 	var calls int
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
+
 		switch r.Header.Get("Authorization") {
 		case "Bearer token-1", "Bearer token-2":
 		default:
 			t.Errorf("unexpected Authorization header %q", r.Header.Get("Authorization"))
 		}
+
 		if calls == 1 {
-			require.Equal(t, "500", r.URL.Query().Get("limit"))
+			if limit := r.URL.Query().Get("limit"); limit != "500" {
+				t.Errorf("first page limit = %q, want 500", limit)
+			}
+
 			_, _ = w.Write([]byte(`{"items":[],"metadata":{"continue":"page-2"}}`))
+
 			return
 		}
-		require.Equal(t, "page-2", r.URL.Query().Get("continue"))
+
+		if continueToken := r.URL.Query().Get("continue"); continueToken != "page-2" {
+			t.Errorf("next-page token = %q, want page-2", continueToken)
+		}
+
 		_, _ = w.Write([]byte(`{"items":[],"metadata":{"continue":""}}`))
 	}))
 	defer server.Close()
+
 	tokenRead := 0
 	client := &kubeClient{
 		base: server.URL, client: server.Client(),
@@ -186,7 +251,7 @@ func TestJobListPaginatesAndUsesCurrentProjectedToken(t *testing.T) {
 			return fmt.Sprintf("token-%d", tokenRead), nil
 		},
 	}
-	jobs, err := client.listJobs(context.Background())
+	jobs, err := client.listJobs(t.Context())
 	require.NoError(t, err)
 	require.Empty(t, jobs)
 	require.Equal(t, 2, calls)
@@ -199,29 +264,45 @@ func testKubeClient(server *httptest.Server) *kubeClient {
 
 func serverBinding(t *testing.T, job Job) RoleBinding {
 	t.Helper()
+
 	decision, err := Evaluate(job, nil)
 	require.NoError(t, err)
 	binding, err := NewRoleBinding(decision)
 	require.NoError(t, err)
+
 	binding.Metadata.UID = "binding-uid"
+
 	return binding
 }
 
-func serverRole(t *testing.T, request *http.Request) LedgerRole {
+func serverRole(t *testing.T) LedgerRole {
 	t.Helper()
+
 	ref := LedgerRef{Namespace: "shared-ledgers", Name: "proxmox-placement-ledger", ClusterID: "proxmox-prod"}
 	role, err := NewLedgerRole(ref)
 	require.NoError(t, err)
-	role.Metadata.UID = "role-uid"
+
+	role.Metadata.UID = testRoleUID
+
 	return role
 }
 
 func replaceSucceeded(t *testing.T, input []byte) []byte {
 	t.Helper()
+
 	var object map[string]any
+
 	require.NoError(t, json.Unmarshal(input, &object))
-	object["items"].([]any)[0].(map[string]any)["status"] = map[string]any{"succeeded": 1}
+
+	items, ok := object["items"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, items)
+	firstItem, ok := items[0].(map[string]any)
+	require.True(t, ok)
+
+	firstItem["status"] = map[string]any{"succeeded": 1}
 	data, err := json.Marshal(object)
 	require.NoError(t, err)
+
 	return data
 }

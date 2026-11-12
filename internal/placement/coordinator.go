@@ -312,6 +312,7 @@ func (l Ledger) Validate() error {
 	if len(l.Records) > MaxLedgerRecords || len(l.Groups) > MaxLedgerRecords {
 		return ErrLedgerFull
 	}
+
 	if err := l.CapacityPolicy.Validate(); err != nil {
 		return fmt.Errorf("validate central capacity policy: %w", err)
 	}

@@ -18,6 +18,8 @@ const (
 	InfraMachineName    = "rke.cattle.io/infra-machine-name"
 	InfraJobRemove      = "rke.cattle.io/infra-remove"
 	DefaultLedgerName   = "pve-placement-ledger"
+	placementArgCount   = 3
+	trueLabelValue      = "true"
 )
 
 var (
@@ -59,18 +61,24 @@ type BindingDecision struct {
 // Evaluate validates Rancher metadata and driver arguments. The caller supplies
 // the previously persisted ledger reference for remove jobs; remove args contain
 // no driver fields in Rancher 2.15.2. unrelated jobs are ignored.
+//
+//nolint:cyclop // Classification combines Rancher create/remove metadata and driver arguments as one policy boundary.
 func Evaluate(job Job, existing *LedgerRef) (BindingDecision, error) {
 	if job.Labels == nil || job.Labels[InfraMachineGroup] == "" || job.Labels[InfraMachineVersion] == "" ||
 		job.Labels[InfraMachineKind] == "" || job.Labels[InfraMachineName] == "" {
 		return BindingDecision{}, ErrNotPlacementJob
 	}
+
 	if !validDNS(job.Namespace) || !validDNS(job.Name) || !validDNS(job.UID) || !validDNS(job.ServiceAccount) {
 		return BindingDecision{}, ErrInvalidJob
 	}
-	remove := job.Labels[InfraJobRemove] == "true"
-	if value := job.Labels[InfraJobRemove]; value != "true" && value != "false" {
+
+	remove := job.Labels[InfraJobRemove] == trueLabelValue
+
+	if value := job.Labels[InfraJobRemove]; value != trueLabelValue && value != "false" {
 		return BindingDecision{}, ErrInvalidJob
 	}
+
 	if remove {
 		if existing == nil && job.Succeeded > 0 {
 			return BindingDecision{
@@ -78,19 +86,24 @@ func Evaluate(job Job, existing *LedgerRef) (BindingDecision, error) {
 				BindingName: BindingName(job.Namespace, job.ServiceAccount), Revoke: true,
 			}, nil
 		}
+
 		if existing == nil || !validLedgerRef(*existing) {
 			return BindingDecision{}, ErrBindingRequired
 		}
+
 		return BindingDecision{
 			SourceNamespace: job.Namespace, ServiceAccount: job.ServiceAccount,
 			Ledger: *existing, BindingName: BindingName(job.Namespace, job.ServiceAccount),
 			Ensure: true, Revoke: job.Succeeded > 0,
 		}, nil
 	}
+
 	if countArg(job.Arguments, "create") != 1 || countArg(job.Arguments, "--driver=pve") != 1 {
 		return BindingDecision{}, ErrNotPlacementJob
 	}
+
 	placementFlagCount := 0
+
 	for _, arg := range job.Arguments {
 		for _, prefix := range []string{
 			"--pve-placement-ledger-namespace=", "--pve-placement-ledger-name=", "--pve-placement-cluster-id=",
@@ -100,16 +113,20 @@ func Evaluate(job Job, existing *LedgerRef) (BindingDecision, error) {
 			}
 		}
 	}
+
 	if placementFlagCount == 0 {
 		return BindingDecision{}, ErrNotPlacementJob
 	}
+
 	ref, err := ledgerFromArgs(job.Arguments)
 	if err != nil {
 		return BindingDecision{}, err
 	}
+
 	if existing != nil && *existing != ref {
 		return BindingDecision{}, ErrInvalidJob
 	}
+
 	return BindingDecision{
 		SourceNamespace: job.Namespace, ServiceAccount: job.ServiceAccount,
 		Ledger: ref, BindingName: BindingName(job.Namespace, job.ServiceAccount), Ensure: true,
@@ -117,20 +134,24 @@ func Evaluate(job Job, existing *LedgerRef) (BindingDecision, error) {
 }
 
 func ledgerFromArgs(args []string) (LedgerRef, error) {
-	values := make(map[string]string, 3)
+	values := make(map[string]string, placementArgCount)
+
 	for _, arg := range args {
 		key, value, found := strings.Cut(arg, "=")
 		if !found {
 			continue
 		}
+
 		switch key {
 		case "--pve-placement-ledger-namespace", "--pve-placement-ledger-name", "--pve-placement-cluster-id":
 			if _, duplicate := values[key]; duplicate {
 				return LedgerRef{}, ErrInvalidJob
 			}
+
 			values[key] = value
 		}
 	}
+
 	ref := LedgerRef{
 		Namespace: values["--pve-placement-ledger-namespace"],
 		Name:      values["--pve-placement-ledger-name"],
@@ -139,6 +160,7 @@ func ledgerFromArgs(args []string) (LedgerRef, error) {
 	if !validLedgerRef(ref) {
 		return LedgerRef{}, fmt.Errorf("placement ledger namespace and cluster identity are required: %w", ErrInvalidJob)
 	}
+
 	return ref, nil
 }
 
@@ -146,30 +168,25 @@ func validLedgerRef(ref LedgerRef) bool {
 	if !validDNS(ref.Namespace) || !validDNS(ref.Name) || len(ref.ClusterID) == 0 || len(ref.ClusterID) > 128 || strings.TrimSpace(ref.ClusterID) != ref.ClusterID {
 		return false
 	}
+
 	for _, char := range ref.ClusterID {
 		if char < ' ' || char > '~' {
 			return false
 		}
 	}
-	return true
-}
 
-func containsArg(args []string, expected string) bool {
-	for _, arg := range args {
-		if arg == expected {
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 func countArg(args []string, expected string) int {
 	count := 0
+
 	for _, arg := range args {
 		if arg == expected {
 			count++
 		}
 	}
+
 	return count
 }
 
@@ -178,6 +195,7 @@ func countArg(args []string, expected string) int {
 func BindingName(namespace, serviceAccount string) string {
 	identity := namespace + "/" + serviceAccount
 	digest := sha256.Sum256([]byte(identity))
+
 	return "pve-placement-" + hex.EncodeToString(digest[:12])
 }
 

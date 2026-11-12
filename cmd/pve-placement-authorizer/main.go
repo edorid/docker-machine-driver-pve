@@ -11,10 +11,18 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+//nolint:wsl // Cancel the signal context before returning the process status.
+func run() int {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	if err := authorization.Run(ctx); err != nil && ctx.Err() == nil {
+	err := authorization.Run(ctx)
+	cancel()
+
+	if err != nil && ctx.Err() == nil {
 		fmt.Fprintln(os.Stderr, "placement authorization controller stopped")
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
