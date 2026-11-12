@@ -1,0 +1,110 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: proxmoxplacementledgers.placement.pve.edorid.github.io
+spec:
+  group: placement.pve.edorid.github.io
+  scope: Namespaced
+  names:
+    plural: proxmoxplacementledgers
+    singular: proxmoxplacementledger
+    kind: ProxmoxPlacementLedger
+    shortNames:
+      - pveledger
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - version
+                - clusterId
+                - capacityPolicy
+                - groups
+                - records
+              properties:
+                version:
+                  type: integer
+                  format: int32
+                  minimum: 1
+                clusterId:
+                  type: string
+                  maxLength: 128
+                  description: Stable administrator-assigned Proxmox cluster identity. Empty until configured.
+                capacityPolicy:
+                  type: object
+                  required:
+                    - configured
+                    - default
+                    - hosts
+                  properties:
+                    configured:
+                      type: boolean
+                    default:
+                      type: object
+                      required:
+                        - cpu
+                        - memoryBytes
+                      properties:
+                        cpu:
+                          type: integer
+                          format: int64
+                          minimum: 0
+                        memoryBytes:
+                          type: integer
+                          format: int64
+                          minimum: 0
+                    hosts:
+                      type: object
+                      maxProperties: 256
+                      additionalProperties:
+                        type: object
+                        required:
+                          - cpu
+                          - memoryBytes
+                        properties:
+                          cpu:
+                            type: integer
+                            format: int64
+                            minimum: 0
+                          memoryBytes:
+                            type: integer
+                            format: int64
+                            minimum: 0
+                groups:
+                  type: object
+                  maxProperties: 256
+                  additionalProperties:
+                    type: string
+                    pattern: "^[a-f0-9]{64}$"
+                records:
+                  type: object
+                  maxProperties: 256
+                  additionalProperties:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+              x-kubernetes-validations:
+                - rule: "size(self.records) <= 256 && size(self.groups) <= 256"
+                  message: "placement ledger capacity limit is 256 records and groups"
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Cluster
+          type: string
+          jsonPath: .spec.clusterId
+        - name: Configured
+          type: boolean
+          jsonPath: .spec.capacityPolicy.configured

@@ -1,0 +1,46 @@
+name: Go validation
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Helm
+        uses: azure/setup-helm@v4.3.0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check Go formatting
+        shell: bash
+        run: |
+          find . -name '*.go' -not -path './vendor/*' -print0 | xargs -0 gofmt -l > gofmt-files.txt
+          if [ -s gofmt-files.txt ]; then
+            cat gofmt-files.txt
+            exit 1
+          fi
+      - name: Verify module contents
+        run: go mod verify
+      - name: Static analysis
+        run: go vet ./...
+      - name: Unit and concurrency tests with race detection
+        run: go test -race -count=1 ./...
+      - name: Build Linux amd64 binaries
+        run: |
+          go build -o docker-machine-driver-pve ./cmd/docker-machine-driver-pve
+          go build -o pve-placement-authorizer ./cmd/pve-placement-authorizer
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+      - name: Validate Helm chart
+        run: |
+          helm lint ./deploy/charts/pve-node-driver
+          helm template pve-node-driver ./deploy/charts/pve-node-driver --namespace fleet-default --include-crds > rendered-chart.yaml

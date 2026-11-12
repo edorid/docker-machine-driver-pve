@@ -3,3 +3,25 @@ nodeDriver:
   checksum: ""
 uiPlugin:
   endpoint: ""
+placement:
+  enabled: true
+  ledgerName: pve-placement-ledger
+  initialLedgerNamespace: fleet-default
+  initialClusterID: ""
+  authorization:
+    deploymentName: pve-placement-authorizer
+    serviceAccountName: pve-placement-authorizer
+    clusterRoleName: pve-placement-authorizer
+    clusterRoleBindingName: pve-placement-authorizer
+    reconcileIntervalSeconds: 2
+    image:
+      repository: ghcr.io/edorid/pve-placement-authorizer
+      tag: ""
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 10m
+        memory: 24Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi

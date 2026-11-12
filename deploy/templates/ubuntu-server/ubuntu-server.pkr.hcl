@@ -75,7 +75,7 @@ source "proxmox-iso" "ubuntu" {
 
   vm_id                = "${var.pve_id}"
   template_name        = "${var.pve_name}"
-  template_description = "Packer config: https://github.com/stellatarum/docker-machine-driver-pve/blob/main/deploy/templates/ubuntu-server"
+  template_description = "Packer config: https://github.com/edorid/docker-machine-driver-pve/blob/main/deploy/templates/ubuntu-server"
   os                   = "l26"
   qemu_agent           = true
   cloud_init           = false

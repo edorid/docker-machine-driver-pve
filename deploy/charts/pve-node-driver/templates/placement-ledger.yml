@@ -1,0 +1,21 @@
+{{- if .Values.placement.enabled }}
+apiVersion: placement.pve.edorid.github.io/v1alpha1
+kind: ProxmoxPlacementLedger
+metadata:
+  name: {{ .Values.placement.ledgerName | default "pve-placement-ledger" | quote }}
+  namespace: {{ .Values.placement.initialLedgerNamespace | quote }}
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+    placement.pve.edorid.github.io/managed: "true"
+spec:
+  version: 1
+  clusterId: {{ .Values.placement.initialClusterID | quote }}
+  capacityPolicy:
+    configured: false
+    default:
+      cpu: 0
+      memoryBytes: 0
+    hosts: {}
+  groups: {}
+  records: {}
+{{- end }}

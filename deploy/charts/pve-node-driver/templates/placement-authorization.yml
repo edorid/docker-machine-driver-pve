@@ -1,0 +1,84 @@
+{{- if .Values.placement.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.placement.authorization.serviceAccountName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app.kubernetes.io/name: pve-placement-authorizer
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.placement.authorization.clusterRoleName | quote }}
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    verbs: ["get", "create"]
+  - apiGroups: ["placement.pve.edorid.github.io"]
+    resources: ["proxmoxplacementledgers"]
+    verbs: ["get", "list", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.placement.authorization.clusterRoleBindingName | quote }}
+  labels:
+    app.kubernetes.io/name: pve-node-driver
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.placement.authorization.serviceAccountName | quote }}
+    namespace: {{ .Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.placement.authorization.clusterRoleName | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.placement.authorization.deploymentName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    app.kubernetes.io/name: pve-placement-authorizer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pve-placement-authorizer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pve-placement-authorizer
+    spec:
+      serviceAccountName: {{ .Values.placement.authorization.serviceAccountName | quote }}
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: authorizer
+          image: "{{ .Values.placement.authorization.image.repository }}:{{ .Values.placement.authorization.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.placement.authorization.image.pullPolicy | quote }}
+          env:
+            - name: RECONCILE_INTERVAL_SECONDS
+              value: {{ .Values.placement.authorization.reconcileIntervalSeconds | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.placement.authorization.resources | nindent 12 }}
+{{- end }}

@@ -11,6 +11,7 @@ concurrency:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -32,12 +33,18 @@ jobs:
       # Set-up build environment
       - name: Install Helm
         uses: azure/setup-helm@v4.3.0
+      - name: Install yq
+        uses: mikefarah/yq@v4.44.3
       - name: Install Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: Pull Go dependencies
         run: go mod vendor
+      - name: Verify Go dependencies
+        run: go mod verify
+      - name: Test before building release artifacts
+        run: go test -race -count=1 ./...
       - name: Install Node
         uses: actions/setup-node@v4
         with:
@@ -60,6 +67,25 @@ jobs:
           CGO_ENABLED: 0
           GOOS: linux
           GOARCH: amd64
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build authorization controller image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/placement-authorizer.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/pve-placement-authorizer:${{ github.ref_name }}
+          labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
       - name: Build Rancher UI Extension
         run: >
           (cd pkg/pve-node-driver && yarn version --new-version "${GITHUB_REF_NAME#v}" --no-git-tag-version)

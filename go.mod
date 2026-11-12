@@ -1,4 +1,4 @@
-module github.com/stellatarum/docker-machine-driver-pve
+module github.com/edorid/docker-machine-driver-pve
 
 go 1.24.1
 

@@ -4,13 +4,12 @@ version: "0.0.0-devel"
 appVersion: "0.0.0-devel"
 name: pve-node-driver
 description: Node Driver for Proxmox Virtual Environment.
-home: https://github.com/stellatarum/docker-machine-driver-pve
+home: https://github.com/edorid/docker-machine-driver-pve
 sources:
-  - https://github.com/stellatarum/docker-machine-driver-pve
+  - https://github.com/edorid/docker-machine-driver-pve
 maintainers:
-  - name: Stellatarum
-    email: contact@stellatarum.com
-    url: https://stellatarum.com/
+  - name: edorid
+    url: https://github.com/edorid
 keywords:
   - infrastructure
 annotations:

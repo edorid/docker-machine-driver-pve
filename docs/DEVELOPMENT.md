@@ -14,7 +14,7 @@ This document provides guidelines for setting up the development environment, ru
 1. Clone and open the repository
 
     ```bash
-    git clone git@github.com:Stellatarum/docker-machine-driver-pve.git
+    git clone git@github.com:edorid/docker-machine-driver-pve.git
     ```
 
     ```bash
