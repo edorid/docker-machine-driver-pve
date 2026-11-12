@@ -13,6 +13,35 @@ entries:
       catalog.cattle.io/ui-component: plugins
       catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
     apiVersion: v2
+    appVersion: v1.2.0-rc4
+    created: "2026-11-12T04:27:16.333059876Z"
+    description: Node Driver for Proxmox Virtual Environment.
+    digest: 45986eb06eb6b77a735547c0871564ebd402292ca6a502ce7a56c6bbf5f7daa0
+    home: https://github.com/edorid/docker-machine-driver-pve
+    keywords:
+    - infrastructure
+    maintainers:
+    - name: edorid
+      url: https://github.com/edorid
+    name: pve-node-driver
+    sources:
+    - https://github.com/edorid/docker-machine-driver-pve
+    type: application
+    urls:
+    - https://github.com/edorid/docker-machine-driver-pve/releases/download/v1.2.0-rc4/pve-node-driver-1.2.0-rc4.tgz
+    version: 1.2.0-rc4
+  - annotations:
+      catalog.cattle.io/display-name: Proxmox VE Node Driver
+      catalog.cattle.io/kube-version: '>= 1.16.0-0'
+      catalog.cattle.io/namespace: cattle-ui-plugin-system
+      catalog.cattle.io/os: linux
+      catalog.cattle.io/permits-os: linux, windows
+      catalog.cattle.io/rancher-version: '>= 2.10.0-0'
+      catalog.cattle.io/release-name: pve-node-driver
+      catalog.cattle.io/scope: management
+      catalog.cattle.io/ui-component: plugins
+      catalog.cattle.io/ui-extensions-version: '>= 3.0.0 < 4.0.0'
+    apiVersion: v2
     appVersion: v1.2.0-rc2
     created: "2025-12-02T20:49:41.005378299Z"
     description: Node Driver for Proxmox Virtual Environment.
@@ -232,4 +261,4 @@ entries:
     urls:
     - https://github.com/Stellatarum/docker-machine-driver-pve/releases/download/v1.0.0-rc2/pve-node-driver-1.0.0-rc2.tgz
     version: 1.0.0-rc2
-generated: "2025-12-02T20:49:41.004936873Z"
+generated: "2026-11-12T04:27:16.332516995Z"
