@@ -73,8 +73,9 @@ controller, either:
 
 The existing controller remains a separate component because it can implement
 Proxmox-specific TLS behavior and exact-Secret authorization without sending
-the Proxmox token to the browser. Its aggregated API is still opt-in until
-ordinary-user allow/deny behavior is verified end to end.
+the Proxmox token to the browser. The chart enables its aggregated inventory
+API by default for Rancher v2.15.3 and later. Ordinary-user allow/deny behavior
+should still be verified end to end in each supported Rancher configuration.
 
 ## Primary sources
 

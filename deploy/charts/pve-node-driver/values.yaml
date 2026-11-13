@@ -27,7 +27,7 @@ placement:
         cpu: 100m
         memory: 64Mi
   inventoryAPI:
-    enabled: false
+    enabled: true
     allowedProxmoxHosts: []
     serviceName: pve-placement-inventory
     apiServiceName: v1alpha1.inventory.pve.edorid.github.io

@@ -22,5 +22,5 @@ annotations:
   catalog.cattle.io/scope: management
   catalog.cattle.io/ui-component: plugins
   catalog.cattle.io/kube-version: ">= 1.16.0-0"
-  catalog.cattle.io/rancher-version: ">= 2.10.0-0"
+  catalog.cattle.io/rancher-version: ">= 2.15.3-0"
   catalog.cattle.io/ui-extensions-version: ">= 3.0.0 < 4.0.0"
