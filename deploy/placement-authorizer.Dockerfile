@@ -7,6 +7,7 @@ ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
+COPY internal/placement ./internal/placement
 COPY internal/authorization ./internal/authorization
 COPY cmd/pve-placement-authorizer ./cmd/pve-placement-authorizer
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/pve-placement-authorizer ./cmd/pve-placement-authorizer

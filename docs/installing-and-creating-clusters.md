@@ -33,7 +33,7 @@ Do this in the Rancher **local** cluster:
    - Index URL: <https://edorid.github.io/docker-machine-driver-pve>
    - Authentication: none
 2. Open **Extensions > Available**, find **Proxmox VE Node Driver**, and install
-    the release you intend to use. Pin a tested version; `1.2.0-rc11` is a
+    the release you intend to use. Pin a tested version; `1.2.0-rc12` is a
     pre-release, not a stable release.
 3. Confirm that the `pve` NodeDriver is active and the Proxmox VE extension is
    ready before starting cluster creation. The chart enables the placement
@@ -53,7 +53,7 @@ Run Helm against the Rancher management cluster, not the downstream cluster
 being created. Replace the version below with the desired published release:
 
 ```sh
-export PVE_NODE_DRIVER_VERSION=1.2.0-rc11
+export PVE_NODE_DRIVER_VERSION=1.2.0-rc12
 : "${PVE_RESERVED_HOST_CPUS:?Set the CPU reserve for Proxmox host services}"
 : "${PVE_RESERVED_HOST_MEMORY_BYTES:?Set the memory reserve in bytes}"
 
