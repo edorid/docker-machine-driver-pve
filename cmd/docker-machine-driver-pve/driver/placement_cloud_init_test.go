@@ -1,11 +1,22 @@
 package driver
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/luthermonson/go-proxmox"
+	"github.com/rancher/machine/libmachine/ssh"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNativeCloudInitAcceptsGeneratedPublicKey(t *testing.T) {
+	d := NewDriver("test", t.TempDir())
+	d.SSHKeyPath = filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, ssh.GenerateSSHKey(d.SSHKeyPath))
+	// A missing network interface fails immediately after key validation, without contacting Proxmox.
+	err := d.setupNativeCloudInit(t.Context())
+	require.ErrorContains(t, err, "network interface")
+}
 
 func TestRequireDynamicCloudInitAddress(t *testing.T) {
 	tests := []struct {

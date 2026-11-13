@@ -73,7 +73,8 @@ func (d *Driver) setupNativeCloudInit(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read placement SSH public key: %w", err)
 	}
-	if len(bytes.TrimSpace(publicKey)) == 0 || bytes.ContainsAny(publicKey, "\r\n") {
+	publicKey = bytes.TrimSpace(publicKey)
+	if len(publicKey) == 0 || bytes.ContainsAny(publicKey, "\r\n") {
 		return errors.New("placement SSH public key is empty or malformed")
 	}
 	interfaceNumber, err := networkInterfaceNumber(d.NetworkInterfaceName)
