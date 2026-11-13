@@ -174,7 +174,7 @@ func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discov
 		if err != nil {
 			return Record{}, decision, fmt.Errorf("select destination: %w", err)
 		}
-		isoStorage, err := selectISOStorage(inventory, decision.Selected.Node)
+		isoStorage, err := SelectISOStorage(inventory, decision.Selected.Node, decision.Selected.Storage)
 		if err != nil {
 			return Record{}, decision, err
 		}
@@ -209,7 +209,9 @@ func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discov
 	return Record{}, Decision{}, fmt.Errorf("reservation contention exceeded bounded retries: %w", ErrConflict)
 }
 
-func selectISOStorage(snapshot Snapshot, host string) (string, error) {
+// SelectISOStorage prefers the VM's image storage when it also supports ISO
+// content. Otherwise it falls back to the first eligible ISO storage by ID.
+func SelectISOStorage(snapshot Snapshot, host, preferredStorage string) (string, error) {
 	var candidates []string
 	for _, node := range snapshot.Nodes {
 		if node.Name != host {
@@ -217,6 +219,9 @@ func selectISOStorage(snapshot Snapshot, host string) (string, error) {
 		}
 		for _, storage := range node.Storages {
 			if storage.Ready && storage.ISOSupported {
+				if storage.ID == preferredStorage {
+					return storage.ID, nil
+				}
 				candidates = append(candidates, storage.ID)
 			}
 		}

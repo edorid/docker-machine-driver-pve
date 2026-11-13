@@ -353,7 +353,7 @@ func (d *Driver) revalidateReservedPlacement(ctx context.Context, coordinator pl
 		return fmt.Errorf("no longer safe to submit reserved clone: %w", err)
 	}
 	if record.ISOStorage != "" {
-		isoStorage, err := selectPlacementISOStorage(snapshot, record.Node)
+		isoStorage, err := placement.SelectISOStorage(snapshot, record.Node, record.Storage)
 		if err != nil || isoStorage != record.ISOStorage {
 			return errors.New("reserved initialization ISO storage is unavailable on selected host")
 		}
@@ -365,24 +365,6 @@ func (d *Driver) revalidateReservedPlacement(ctx context.Context, coordinator pl
 	}
 
 	return errors.New("reserved Proxmox destination is no longer eligible; operator recovery required")
-}
-
-func selectPlacementISOStorage(snapshot placement.Snapshot, host string) (string, error) {
-	var selected string
-	for _, node := range snapshot.Nodes {
-		if node.Name != host {
-			continue
-		}
-		for _, storage := range node.Storages {
-			if storage.Ready && storage.ISOSupported && (selected == "" || storage.ID < selected) {
-				selected = storage.ID
-			}
-		}
-	}
-	if selected == "" {
-		return "", errors.New("no active ISO-capable storage")
-	}
-	return selected, nil
 }
 
 //nolint:gocognit,cyclop,nestif,wsl // Removal retains the durable intent across each external side effect.

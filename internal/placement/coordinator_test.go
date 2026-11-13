@@ -100,7 +100,7 @@ func TestReserveReplayAndExactlyOneSubmission(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, intent.IncarnationID, first.IncarnationID)
 	require.Equal(t, intent.ISOName, first.ISOName)
-	require.Equal(t, "disk-a", first.ISOStorage)
+	require.Equal(t, "disk-b", first.ISOStorage)
 	replay, _, err := coordinator.Reserve(t.Context(), intent, discoverTestInventory)
 	require.NoError(t, err)
 	require.Equal(t, first, replay)
@@ -131,7 +131,23 @@ func TestReserveReplayAndExactlyOneSubmission(t *testing.T) {
 	require.ErrorIs(t, err, ErrUncertainOperation)
 }
 
-func TestSelectISOStorageChoosesActiveCapableStorageOnSelectedHost(t *testing.T) {
+func TestSelectISOStoragePrefersVMStorageWhenISOCapable(t *testing.T) {
+	snapshot := testInventory()
+	for index := range snapshot.Nodes {
+		if snapshot.Nodes[index].Name == "host-a" {
+			snapshot.Nodes[index].Storages = []Storage{
+				{ID: "z-iso", Ready: true, ISOSupported: true},
+				{ID: "disk-a", Ready: true, CloneSupported: true, ISOSupported: true},
+				{ID: "a-iso", Ready: true, ISOSupported: true},
+			}
+		}
+	}
+	selected, err := SelectISOStorage(snapshot, "host-a", "disk-a")
+	require.NoError(t, err)
+	require.Equal(t, "disk-a", selected)
+}
+
+func TestSelectISOStorageFallsBackToDeterministicISOStorage(t *testing.T) {
 	snapshot := testInventory()
 	for index := range snapshot.Nodes {
 		if snapshot.Nodes[index].Name == "host-a" {
@@ -139,13 +155,17 @@ func TestSelectISOStorageChoosesActiveCapableStorageOnSelectedHost(t *testing.T)
 				{ID: "z-iso", Ready: true, ISOSupported: true},
 				{ID: "images-only", Ready: true, CloneSupported: true},
 				{ID: "a-iso", Ready: true, ISOSupported: true},
+				{ID: "not-ready", Ready: false, ISOSupported: true},
 			}
 		}
 	}
-	selected, err := selectISOStorage(snapshot, "host-a")
+	selected, err := SelectISOStorage(snapshot, "host-a", "images-only")
 	require.NoError(t, err)
 	require.Equal(t, "a-iso", selected)
-	_, err = selectISOStorage(snapshot, "unknown-host")
+	selected, err = SelectISOStorage(snapshot, "host-a", "not-ready")
+	require.NoError(t, err)
+	require.Equal(t, "a-iso", selected)
+	_, err = SelectISOStorage(snapshot, "unknown-host", "disk-a")
 	require.Error(t, err)
 }
 
