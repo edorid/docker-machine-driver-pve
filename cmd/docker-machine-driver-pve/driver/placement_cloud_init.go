@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -83,7 +84,7 @@ func (d *Driver) setupNativeCloudInit(ctx context.Context) error {
 	}
 	options := []proxmox.VirtualMachineOption{
 		{Name: "ciuser", Value: d.SSHUser},
-		{Name: "sshkeys", Value: strings.TrimSpace(string(publicKey))},
+		{Name: "sshkeys", Value: strings.ReplaceAll(url.QueryEscape(string(publicKey)), "+", "%20")},
 	}
 	return d.runTaskOnCurrentMachine(ctx, func(ctx context.Context, machine *proxmox.VirtualMachine) (*proxmox.Task, error) {
 		if machine.VirtualMachineConfig == nil || !hasCloudInitDisk(machine.VirtualMachineConfig) {
