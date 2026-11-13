@@ -31,6 +31,7 @@ func TestReconcileCreateRecoversLostRoleAndBindingResponses(t *testing.T) {
 	require.NoError(t, err)
 
 	roleCreated, bindingCreated := false, false
+	metadataRoleCreated, metadataBindingCreated := false, false
 	loseRoleResponse, loseBindingResponse := true, true
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -41,6 +42,14 @@ func TestReconcileCreateRecoversLostRoleAndBindingResponses(t *testing.T) {
 			_, _ = writer.Write([]byte(`{"items":[]}`))
 		case request.Method == http.MethodGet && request.URL.Path == "/apis/placement.pve.edorid.github.io/v1alpha1/namespaces/shared-ledgers/proxmoxplacementledgers/proxmox-placement-ledger":
 			_, _ = writer.Write([]byte(`{"apiVersion":"placement.pve.edorid.github.io/v1alpha1","kind":"ProxmoxPlacementLedger","spec":{"clusterId":"proxmox-prod"}}`))
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/roles/"+machineMetadataRole):
+			if metadataRoleCreated {
+				role, _ := NewMachineMetadataRole(job.Namespace)
+				role.Metadata.UID = "machine-metadata-role-uid"
+				_ = json.NewEncoder(writer).Encode(role)
+				return
+			}
+			http.NotFound(writer, request)
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/roles/"+LedgerRoleName(LedgerRef{Namespace: "shared-ledgers", Name: "proxmox-placement-ledger"})):
 			if roleCreated {
 				_ = json.NewEncoder(writer).Encode(serverRole(t))
@@ -56,8 +65,13 @@ func TestReconcileCreateRecoversLostRoleAndBindingResponses(t *testing.T) {
 				return
 			}
 
-			role.Metadata.UID = testRoleUID
-			roleCreated = true
+			if role.Metadata.Name == machineMetadataRole {
+				role.Metadata.UID = "machine-metadata-role-uid"
+				metadataRoleCreated = true
+			} else {
+				role.Metadata.UID = testRoleUID
+				roleCreated = true
+			}
 
 			if loseRoleResponse {
 				loseRoleResponse = false
@@ -68,6 +82,14 @@ func TestReconcileCreateRecoversLostRoleAndBindingResponses(t *testing.T) {
 			}
 
 			writer.WriteHeader(http.StatusCreated)
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/rolebindings/"+BindingName(job.Namespace, job.ServiceAccount)+"-capi-read"):
+			if metadataBindingCreated {
+				binding, _ := NewMachineMetadataRoleBinding(job.Namespace, job.ServiceAccount)
+				binding.Metadata.UID = "machine-metadata-binding-uid"
+				_ = json.NewEncoder(writer).Encode(binding)
+				return
+			}
+			http.NotFound(writer, request)
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/rolebindings/"+BindingName(job.Namespace, job.ServiceAccount)):
 			if bindingCreated {
 				_ = json.NewEncoder(writer).Encode(serverBinding(t, job))
@@ -83,7 +105,12 @@ func TestReconcileCreateRecoversLostRoleAndBindingResponses(t *testing.T) {
 				return
 			}
 
-			bindingCreated = true
+			if binding.Metadata.Name == BindingName(job.Namespace, job.ServiceAccount)+"-capi-read" {
+				metadataBindingCreated = true
+				binding.Metadata.UID = "machine-metadata-binding-uid"
+			} else {
+				bindingCreated = true
+			}
 
 			if loseBindingResponse {
 				loseBindingResponse = false
@@ -103,9 +130,11 @@ func TestReconcileCreateRecoversLostRoleAndBindingResponses(t *testing.T) {
 	client := testKubeClient(server)
 	require.Error(t, client.reconcile(t.Context())) // Role create succeeded but response was lost.
 	require.True(t, roleCreated)
-	require.Error(t, client.reconcile(t.Context())) // Binding create succeeded but response was lost.
+	require.Error(t, client.reconcile(t.Context())) // Ledger binding create succeeded but response was lost.
 	require.True(t, bindingCreated)
 	require.NoError(t, client.reconcile(t.Context()))
+	require.True(t, metadataRoleCreated)
+	require.True(t, metadataBindingCreated)
 }
 
 //nolint:cyclop // The mock covers multiple removal outcomes.
@@ -124,8 +153,12 @@ func TestReconcileRemoveKeepsBindingUntilSuccessAndHandlesLostDelete(t *testing.
 	binding := serverBinding(t, placementJob())
 	bindingJSON, err := json.Marshal(map[string]any{"items": []RoleBinding{binding}})
 	require.NoError(t, err)
+	metadataBinding, err := NewMachineMetadataRoleBinding(job.Namespace, job.ServiceAccount)
+	require.NoError(t, err)
+	metadataBinding.Metadata.UID = "machine-metadata-binding-uid"
 
 	deleteCount := 0
+	metadataBindingDeleted := false
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch {
@@ -133,6 +166,8 @@ func TestReconcileRemoveKeepsBindingUntilSuccessAndHandlesLostDelete(t *testing.
 			_, _ = writer.Write(jobJSON)
 		case request.Method == http.MethodGet && request.URL.Path == roleBindingCollectionPath:
 			_, _ = writer.Write(bindingJSON)
+		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/rolebindings/"+metadataBinding.Metadata.Name):
+			_ = json.NewEncoder(writer).Encode(metadataBinding)
 		case request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/rolebindings/"+binding.Metadata.Name):
 			_ = json.NewEncoder(writer).Encode(binding)
 		case request.Method == http.MethodGet && strings.Contains(request.URL.Path, "/proxmoxplacementledgers/"):
@@ -157,6 +192,9 @@ func TestReconcileRemoveKeepsBindingUntilSuccessAndHandlesLostDelete(t *testing.
 				t.Errorf("delete UID precondition = %q, want %q", options.Preconditions.UID, binding.Metadata.UID)
 			}
 
+			writer.WriteHeader(http.StatusOK)
+		case request.Method == http.MethodDelete && strings.HasSuffix(request.URL.Path, "/rolebindings/"+metadataBinding.Metadata.Name):
+			metadataBindingDeleted = true
 			writer.WriteHeader(http.StatusOK)
 		case strings.Contains(request.URL.Path, "/proxmoxplacementledgers/"):
 			t.Error("successful remove must not need the ledger")
@@ -190,7 +228,21 @@ func TestReconcileRemoveKeepsBindingUntilSuccessAndHandlesLostDelete(t *testing.
 			return
 		}
 
+		if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/rolebindings/"+metadataBinding.Metadata.Name) {
+			if metadataBindingDeleted {
+				http.NotFound(writer, request)
+			} else {
+				_ = json.NewEncoder(writer).Encode(metadataBinding)
+			}
+			return
+		}
+
 		if request.Method == http.MethodDelete {
+			if strings.HasSuffix(request.URL.Path, "/rolebindings/"+metadataBinding.Metadata.Name) {
+				metadataBindingDeleted = true
+				writer.WriteHeader(http.StatusOK)
+				return
+			}
 			deleteCount++
 
 			if loseResponse {
@@ -213,6 +265,7 @@ func TestReconcileRemoveKeepsBindingUntilSuccessAndHandlesLostDelete(t *testing.
 	jobJSON = replaceSucceeded(t, jobJSON)
 	require.NoError(t, client.reconcile(t.Context()))
 	require.Equal(t, 1, deleteCount)
+	require.True(t, metadataBindingDeleted)
 }
 
 //nolint:varnamelen // The HTTP handler parameters follow net/http's conventional names.

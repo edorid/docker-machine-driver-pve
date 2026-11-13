@@ -531,6 +531,45 @@ func (c *kubeClient) ensureLedgerRole(ctx context.Context, wanted LedgerRole) er
 	})
 }
 
+func (c *kubeClient) ensureMachineMetadataRole(ctx context.Context, wanted LedgerRole) error {
+	path := "/apis/rbac.authorization.k8s.io/v1/namespaces/" + wanted.Metadata.Namespace + "/roles/" + wanted.Metadata.Name
+	collection := "/apis/rbac.authorization.k8s.io/v1/namespaces/" + wanted.Metadata.Namespace + "/roles"
+	return ensureNamespacedObject(ctx, c, collection, path, wanted, decodeRole, func(existing LedgerRole) error {
+		return ValidateMachineMetadataRole(existing, wanted)
+	})
+}
+
+func (c *kubeClient) ensureMachineMetadataBinding(ctx context.Context, wanted RoleBinding) error {
+	path := "/apis/rbac.authorization.k8s.io/v1/namespaces/" + wanted.Metadata.Namespace + "/rolebindings/" + wanted.Metadata.Name
+	collection := "/apis/rbac.authorization.k8s.io/v1/namespaces/" + wanted.Metadata.Namespace + "/rolebindings"
+	return ensureNamespacedObject(ctx, c, collection, path, wanted, decodeRoleBinding, func(existing RoleBinding) error {
+		return ValidateMachineMetadataRoleBinding(existing, wanted)
+	})
+}
+
+func (c *kubeClient) deleteMachineMetadataBinding(ctx context.Context, namespace, serviceAccount string) error {
+	wanted, err := NewMachineMetadataRoleBinding(namespace, serviceAccount)
+	if err != nil {
+		return err
+	}
+	path := "/apis/rbac.authorization.k8s.io/v1/namespaces/" + namespace + "/rolebindings/" + wanted.Metadata.Name
+	data, err := c.request(ctx, http.MethodGet, path, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	existing, err := decodeRoleBinding(data)
+	if err != nil {
+		return err
+	}
+	if err := ValidateMachineMetadataRoleBinding(existing, wanted); err != nil {
+		return err
+	}
+	return c.deleteBinding(ctx, existing)
+}
+
 //nolint:wsl // This helper preserves a single read/create/conflict-recovery protocol for both RBAC object types.
 func ensureNamespacedObject[T any](ctx context.Context, client *kubeClient, collection, objectPath string, wanted any, decode func([]byte) (T, error), validate func(T) error) error {
 	data, err := client.request(ctx, http.MethodGet, objectPath, nil)
@@ -621,6 +660,9 @@ func (c *kubeClient) reconcileJob(ctx context.Context, job Job, bindings map[str
 		return fmt.Errorf("evaluate provisioning Job %s/%s: %w", job.Namespace, job.Name, err)
 	}
 	if decision.Revoke {
+		if err := c.deleteMachineMetadataBinding(ctx, job.Namespace, job.ServiceAccount); err != nil {
+			return fmt.Errorf("revoke CAPI metadata access for completed machine: %w", err)
+		}
 		if found {
 			if err := c.deleteBinding(ctx, existingBinding); err != nil {
 				return fmt.Errorf("revoke completed machine ledger binding: %w", err)
@@ -645,6 +687,22 @@ func (c *kubeClient) reconcileJob(ctx context.Context, job Job, bindings map[str
 	}
 	if err := c.ensureBinding(ctx, wanted); err != nil {
 		return fmt.Errorf("ensure machine ledger binding for Job %s/%s: %w", job.Namespace, job.Name, err)
+	}
+	if job.Labels[InfraJobRemove] != trueLabelValue {
+		metadataRole, err := NewMachineMetadataRole(job.Namespace)
+		if err != nil {
+			return err
+		}
+		if err := c.ensureMachineMetadataRole(ctx, metadataRole); err != nil {
+			return fmt.Errorf("ensure CAPI Machine metadata Role: %w", err)
+		}
+		metadataBinding, err := NewMachineMetadataRoleBinding(job.Namespace, job.ServiceAccount)
+		if err != nil {
+			return err
+		}
+		if err := c.ensureMachineMetadataBinding(ctx, metadataBinding); err != nil {
+			return fmt.Errorf("ensure per-machine CAPI metadata RoleBinding: %w", err)
+		}
 	}
 	bindings[key] = wanted
 	return nil

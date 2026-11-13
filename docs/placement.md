@@ -8,6 +8,15 @@ validate it against your Rancher and Proxmox environment before production use.
 - Use a Rancher management cluster and a supported Proxmox cluster. Placement
   uses the management-cluster Kubernetes API; do not put its ledger in the
   downstream cluster being provisioned.
+- The placement authorization controller grants each placement machine's
+  ServiceAccount read-only access to CAPI `Machine` objects in its namespace.
+  The controller itself needs cluster-scoped read access to CAPI Machines so it
+  can delegate this narrower per-machine Role without general RBAC escalation.
+  The driver matches `spec.infrastructureRef.name` to its machine name and reads
+  the `cluster.x-k8s.io/cluster-name` and
+  `rke.cattle.io/rke-machine-pool-name` labels. Missing, ambiguous, or denied
+  metadata blocks provisioning. The controller revokes this grant after Rancher
+  reports successful machine removal.
 - Install the chart's placement CRD and authorization controller. Configure
   positive shared CPU and memory reserves with
   `placement.capacityPolicy.default.cpu` and
@@ -22,10 +31,13 @@ validate it against your Rancher and Proxmox environment before production use.
   and delete managed VMs. Discovery fails closed when an endpoint is denied.
 - Make a compatible host-local cloud-init template available on every allowed
   host. Templates need a configured boot order, a supported boot disk, a
-  Proxmox cloud-init drive, guest agent, and the selected network interface on
-  an existing bridge. Guest networking uses DHCP and SSH uses the configured
-  public key and Linux account. Guest account/sudo defaults must be verified by
-  the operator; the Proxmox API cannot prove them.
+  Proxmox cloud-init drive, guest agent, exactly one DHCP network interface with
+  a MAC address on an existing bridge, and no custom Cloud-Init snippets. At
+  least one active ISO-capable storage must be available on each eligible host;
+  the driver selects it automatically. Guest networking uses DHCP-provided DNS
+  and domain, and SSH uses the configured public key and Linux account. Guest
+  account/sudo defaults must be verified by the operator; the Proxmox API cannot
+  prove them.
 
 ## Machine configuration
 
@@ -52,10 +64,17 @@ The form discovers online hosts, enabled/active image storages, and local
 templates using the selected Proxmox credential. Select the allowed hosts first;
 the storage choices then narrow to storages common to those hosts. Choose one
 template per selected host. Discovery can be refreshed, but is advisory and
-does not replace provisioning-time validation. Rancher does not provide cluster
-and machine-pool display names to this driver, so the optional labels in the
-form must be supplied explicitly; when set, the driver adds normalized
-`rancher-cluster-*` and `rancher-pool-*` VM tags automatically.
+does not replace provisioning-time validation. The driver adds normalized
+`rancher-cluster-*` and `rancher-pool-*` tags from CAPI metadata; it rejects
+names that cannot be represented or collide with a different persisted name.
+These tags are informational, not ownership proof.
+
+New placement VMs receive a unique machine-incarnation identity in both the
+placement ledger and VM description. Their unique NoCloud ISO supplies user
+data, metadata, and DHCP network configuration, and stays attached until VM
+deletion. The ledger records its name and ISO storage before upload. Uncertain
+upload, attachment, ownership, host, or cleanup outcomes retain the ledger
+reservation; the driver never overwrites an existing ISO.
 
 ## Recovery behavior
 

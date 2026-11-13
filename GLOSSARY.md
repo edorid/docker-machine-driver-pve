@@ -12,6 +12,14 @@ _Avoid_: Kubernetes node, machine
 One distinct instance of a Rancher-managed machine, separate from any predecessor or replacement.
 _Avoid_: VM name as identity
 
+**Machine incarnation identity**:
+An identifier that distinguishes one machine incarnation from every other incarnation, including replacements that reuse names or VMIDs.
+_Avoid_: Cluster or pool tag as ownership proof
+
+**Machine information tag**:
+A visible label identifying the Rancher cluster or machine pool associated with a machine; it does not establish ownership of that machine.
+_Avoid_: Ownership marker
+
 **Placement group**:
 A set of machines explicitly identified for distribution and anti-affinity evaluation, independent of their Proxmox resource pool.
 
@@ -35,6 +43,10 @@ A host-local template whose guest defaults provide the SSH access, locked passwo
 
 **Boot disk**:
 The first supported VM disk in a template's configured boot order. Its requested size may be expanded for a new machine; other attached disks retain their template sizes.
+
+**Machine initialization media**:
+The machine-incarnation-specific configuration media used to initialize a guest; it remains associated with that incarnation until its cleanup is verified.
+_Avoid_: Shared template media
 
 **Placement inventory**:
 The complete set of VMs and pending placements relevant to a placement policy, including members in other resource pools.

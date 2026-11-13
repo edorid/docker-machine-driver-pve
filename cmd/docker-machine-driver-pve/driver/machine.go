@@ -26,13 +26,30 @@ func (d *Driver) getCurrentMachine(ctx context.Context) (*proxmox.VirtualMachine
 	if d.PVEMachineID == nil {
 		return nil, errors.New("failed to retrieve current Proxmox VE virtual machine: no ID set")
 	}
+	if d.PlacementGroup != "" && d.placementIncarnationID == "" {
+		coordinator, err := d.newPlacementCoordinator()
+		if err != nil {
+			return nil, err
+		}
+		document, err := coordinator.Store.Read(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("read placement ownership before VM operation: %w", err)
+		}
+		record, found := document.Ledger.Records[d.MachineName]
+		if !found || record.VMID != *d.PVEMachineID {
+			return nil, errors.New("placement ledger does not prove ownership of the current VM")
+		}
+		d.placementIncarnationID = record.IncarnationID
+		d.placementISOName = record.ISOName
+		d.placementISOStorage = record.ISOStorage
+	}
 
 	vm, err := d.getPVEVirtualMachine(ctx, *d.PVEMachineID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve current Proxmox VE virtual machine ID='%d': %w", *d.PVEMachineID, err)
 	}
 
-	if !vm.HasTag(pveMachineTag) {
+	if !placementOwnershipMatches(vm, d.placementIncarnationID) {
 		return nil, fmt.Errorf("current Proxmox VE virtual machine ID='%d' does not have expected tag '%s', it could have been replaced or modified outside the driver", *d.PVEMachineID, pveMachineTag)
 	}
 

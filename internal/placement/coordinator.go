@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 )
 
@@ -80,12 +82,16 @@ type Coordinator struct {
 }
 
 type Intent struct {
-	MachineID     string
-	OwnerID       string
-	VMID          int
-	Policy        Policy
-	Resources     Resources
-	BootDiskBytes uint64
+	MachineID          string
+	OwnerID            string
+	IncarnationID      string
+	ISOName            string
+	RancherClusterName string
+	RancherPoolName    string
+	VMID               int
+	Policy             Policy
+	Resources          Resources
+	BootDiskBytes      uint64
 }
 
 // Discover is called again after every CAS conflict. It must obtain complete,
@@ -99,7 +105,8 @@ type Discover func(context.Context) (Snapshot, error)
 //nolint:gocognit,gocyclo,cyclop // The safety-critical reservation transaction is kept together.
 func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discover) (Record, Decision, error) {
 	if c.Store == nil || !validIdentity(c.ClusterID) || discover == nil ||
-		!validIdentity(intent.MachineID) || !validIdentity(intent.OwnerID) || intent.VMID < 100 || intent.VMID > 999999999 ||
+		!validIdentity(intent.MachineID) || !validIdentity(intent.OwnerID) || (intent.IncarnationID != "" && !validIdentity(intent.IncarnationID)) || (intent.ISOName != "" && !validIdentity(intent.ISOName)) ||
+		(intent.RancherClusterName != "" && !validIdentity(intent.RancherClusterName)) || (intent.RancherPoolName != "" && !validIdentity(intent.RancherPoolName)) || intent.VMID < 100 || intent.VMID > 999999999 ||
 		intent.Resources.CPU == 0 || intent.Resources.MemoryBytes == 0 || intent.Resources.DiskBytes == 0 || intent.BootDiskBytes == 0 {
 		return Record{}, Decision{}, errors.New("invalid coordinator or machine intent")
 	}
@@ -121,7 +128,10 @@ func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discov
 		}
 
 		if record, found := ledger.Records[intent.MachineID]; found {
-			if record.OwnerID != intent.OwnerID || record.VMID != intent.VMID || record.PolicyHash != fingerprint || record.Resources != intent.Resources || record.BootDiskBytes != intent.BootDiskBytes {
+			if record.OwnerID != intent.OwnerID || record.VMID != intent.VMID || record.IncarnationID != intent.IncarnationID || record.ISOName != intent.ISOName ||
+				(record.RancherClusterName != "" && record.RancherClusterName != intent.RancherClusterName) ||
+				(record.RancherPoolName != "" && record.RancherPoolName != intent.RancherPoolName) ||
+				record.PolicyHash != fingerprint || record.Resources != intent.Resources || record.BootDiskBytes != intent.BootDiskBytes {
 				return Record{}, Decision{}, ErrIdentityConflict
 			}
 
@@ -133,6 +143,9 @@ func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discov
 		for _, record := range ledger.Records {
 			if record.VMID == intent.VMID || record.OwnerID == intent.OwnerID {
 				return Record{}, Decision{}, ErrIdentityConflict
+			}
+			if rancherNameCollision(record.RancherClusterName, intent.RancherClusterName) || rancherNameCollision(record.RancherPoolName, intent.RancherPoolName) {
+				return Record{}, Decision{}, errors.New("Rancher machine names collide after Proxmox tag normalization")
 			}
 
 			commitments = append(commitments, record.Commitment)
@@ -161,11 +174,16 @@ func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discov
 		if err != nil {
 			return Record{}, decision, fmt.Errorf("select destination: %w", err)
 		}
+		isoStorage, err := selectISOStorage(inventory, decision.Selected.Node)
+		if err != nil {
+			return Record{}, decision, err
+		}
 
 		record := Record{
 			Commitment: Commitment{
-				MachineID: intent.MachineID, OwnerID: intent.OwnerID, GroupID: intent.Policy.GroupID,
-				VMID: intent.VMID, Node: decision.Selected.Node, Storage: decision.Selected.Storage,
+				MachineID: intent.MachineID, OwnerID: intent.OwnerID, IncarnationID: intent.IncarnationID, ISOName: intent.ISOName,
+				RancherClusterName: intent.RancherClusterName, RancherPoolName: intent.RancherPoolName, GroupID: intent.Policy.GroupID,
+				VMID: intent.VMID, Node: decision.Selected.Node, Storage: decision.Selected.Storage, ISOStorage: isoStorage,
 				Resources: intent.Resources, BootDiskBytes: intent.BootDiskBytes,
 			},
 			PolicyHash: fingerprint, Phase: Reserved, CreatedAt: time.Now().UTC(),
@@ -189,6 +207,50 @@ func (c Coordinator) Reserve(ctx context.Context, intent Intent, discover Discov
 	}
 
 	return Record{}, Decision{}, fmt.Errorf("reservation contention exceeded bounded retries: %w", ErrConflict)
+}
+
+func selectISOStorage(snapshot Snapshot, host string) (string, error) {
+	var candidates []string
+	for _, node := range snapshot.Nodes {
+		if node.Name != host {
+			continue
+		}
+		for _, storage := range node.Storages {
+			if storage.Ready && storage.ISOSupported {
+				candidates = append(candidates, storage.ID)
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return "", errors.New("selected Proxmox host has no active ISO-capable storage")
+	}
+	sort.Strings(candidates)
+	return candidates[0], nil
+}
+
+func rancherNameCollision(existing, requested string) bool {
+	if existing == "" || requested == "" || existing == requested {
+		return false
+	}
+	return normalizeRancherTagName(existing) != "" && normalizeRancherTagName(existing) == normalizeRancherTagName(requested)
+}
+
+func normalizeRancherTagName(value string) string {
+	var normalized strings.Builder
+	separator := false
+	for _, character := range strings.ToLower(strings.TrimSpace(value)) {
+		valid := character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '_' || character == '-'
+		if valid {
+			if separator && normalized.Len() > 0 {
+				normalized.WriteByte('-')
+			}
+			separator = false
+			normalized.WriteRune(character)
+		} else {
+			separator = true
+		}
+	}
+	return strings.Trim(normalized.String(), "-_")
 }
 
 // BeginSubmission grants exactly one successful caller a token to submit a clone.
@@ -374,10 +436,16 @@ func (l Ledger) Validate() error {
 	vmids, owners := make(map[int]bool), make(map[string]bool)
 	for id, record := range l.Records {
 		if id != record.MachineID || !validIdentity(id) || !validIdentity(record.OwnerID) || !validIdentity(record.GroupID) ||
+			(record.IncarnationID != "" && !validIdentity(record.IncarnationID)) || (record.ISOName != "" && !validIdentity(record.ISOName)) ||
+			(record.ISOStorage != "" && !storageID.MatchString(record.ISOStorage)) ||
+			(record.RancherClusterName != "" && !validIdentity(record.RancherClusterName)) || (record.RancherPoolName != "" && !validIdentity(record.RancherPoolName)) ||
 			!validHost(record.Node) || !storageID.MatchString(record.Storage) || record.VMID < 100 || record.VMID > 999999999 ||
 			vmids[record.VMID] || owners[record.OwnerID] || record.CreatedAt.IsZero() ||
 			record.Resources.CPU == 0 || record.Resources.MemoryBytes == 0 || record.Resources.DiskBytes == 0 || record.BootDiskBytes == 0 ||
 			l.Groups[record.GroupID] != record.PolicyHash || !validHash(record.PolicyHash) {
+			return ErrLedgerUnavailable
+		}
+		if record.IncarnationID != "" && (record.ISOName != "pve-cloud-init-"+record.IncarnationID+".iso" || record.ISOStorage == "" || record.RancherClusterName == "" || record.RancherPoolName == "") {
 			return ErrLedgerUnavailable
 		}
 

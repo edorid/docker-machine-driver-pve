@@ -8,12 +8,15 @@ import (
 )
 
 const (
-	managedValue         = "true"
-	managedLabel         = "placement.pve.edorid.github.io/managed"
-	clusterIDAnnotation  = "placement.pve.edorid.github.io/cluster-id"
-	ledgerNameAnnotation = "placement.pve.edorid.github.io/ledger-name"
-	sourceNSAnnotation   = "placement.pve.edorid.github.io/source-namespace"
-	sourceSAAnnotation   = "placement.pve.edorid.github.io/source-service-account"
+	managedValue           = "true"
+	managedLabel           = "placement.pve.edorid.github.io/managed"
+	clusterIDAnnotation    = "placement.pve.edorid.github.io/cluster-id"
+	ledgerNameAnnotation   = "placement.pve.edorid.github.io/ledger-name"
+	sourceNSAnnotation     = "placement.pve.edorid.github.io/source-namespace"
+	sourceSAAnnotation     = "placement.pve.edorid.github.io/source-service-account"
+	machineMetadataRole    = "pve-capi-machine-metadata-reader"
+	metadataManagedLabel   = "placement.pve.edorid.github.io/capi-metadata-managed"
+	metadataRoleAnnotation = "placement.pve.edorid.github.io/capi-metadata-role"
 )
 
 var ErrBindingMismatch = errors.New("existing placement role binding does not match machine identity")
@@ -132,6 +135,61 @@ func NewLedgerRole(ref LedgerRef) (LedgerRole, error) {
 			ResourceNames: []string{ref.Name}, Verbs: []string{"get", "update"},
 		}},
 	}, nil
+}
+
+// NewMachineMetadataRole grants only namespaced read access to CAPI Machines.
+func NewMachineMetadataRole(namespace string) (LedgerRole, error) {
+	if !validDNS(namespace) {
+		return LedgerRole{}, errors.New("invalid machine namespace for CAPI metadata Role")
+	}
+	return LedgerRole{
+		APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role",
+		Metadata: BindingMetadata{
+			Name: machineMetadataRole, Namespace: namespace,
+			Labels:      map[string]string{metadataManagedLabel: managedValue},
+			Annotations: map[string]string{sourceNSAnnotation: namespace, metadataRoleAnnotation: machineMetadataRole},
+		},
+		Rules: []PolicyRule{{APIGroups: []string{"cluster.x-k8s.io"}, Resources: []string{"machines"}, Verbs: []string{"get", "list"}}},
+	}, nil
+}
+
+func ValidateMachineMetadataRole(existing, wanted LedgerRole) error {
+	if existing.Metadata.UID == "" || existing.Metadata.Name != wanted.Metadata.Name || existing.Metadata.Namespace != wanted.Metadata.Namespace ||
+		existing.Metadata.Labels[metadataManagedLabel] != managedValue ||
+		existing.Metadata.Annotations[sourceNSAnnotation] != wanted.Metadata.Annotations[sourceNSAnnotation] ||
+		existing.Metadata.Annotations[metadataRoleAnnotation] != machineMetadataRole || len(existing.Rules) != 1 ||
+		!equalRule(existing.Rules[0], wanted.Rules[0]) {
+		return ErrBindingMismatch
+	}
+	return nil
+}
+
+func NewMachineMetadataRoleBinding(namespace, serviceAccount string) (RoleBinding, error) {
+	if !validDNS(namespace) || !validDNS(serviceAccount) {
+		return RoleBinding{}, errors.New("invalid machine namespace or ServiceAccount for CAPI metadata access")
+	}
+	return RoleBinding{
+		APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding",
+		Metadata: BindingMetadata{
+			Name: BindingName(namespace, serviceAccount) + "-capi-read", Namespace: namespace,
+			Labels:      map[string]string{metadataManagedLabel: managedValue},
+			Annotations: map[string]string{sourceNSAnnotation: namespace, sourceSAAnnotation: serviceAccount, metadataRoleAnnotation: machineMetadataRole},
+		},
+		Subjects: []BindingSubject{{Kind: "ServiceAccount", Name: serviceAccount, Namespace: namespace}},
+		RoleRef:  BindingRoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: machineMetadataRole},
+	}, nil
+}
+
+func ValidateMachineMetadataRoleBinding(existing, wanted RoleBinding) error {
+	if existing.Metadata.UID == "" || existing.Metadata.Name != wanted.Metadata.Name || existing.Metadata.Namespace != wanted.Metadata.Namespace ||
+		existing.Metadata.Labels[metadataManagedLabel] != managedValue ||
+		existing.Metadata.Annotations[sourceNSAnnotation] != wanted.Metadata.Annotations[sourceNSAnnotation] ||
+		existing.Metadata.Annotations[sourceSAAnnotation] != wanted.Metadata.Annotations[sourceSAAnnotation] ||
+		existing.Metadata.Annotations[metadataRoleAnnotation] != machineMetadataRole ||
+		!sameSubject(existing.Subjects, wanted.Subjects) || existing.RoleRef != wanted.RoleRef {
+		return ErrBindingMismatch
+	}
+	return nil
 }
 
 func ValidateExistingRole(existing, wanted LedgerRole) error {

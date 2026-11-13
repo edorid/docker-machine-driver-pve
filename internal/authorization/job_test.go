@@ -156,3 +156,28 @@ func TestRoleBindingIsLimitedToOneLedgerAndOneServiceAccount(t *testing.T) {
 	savedRole.Rules[0].ResourceNames = []string{"*"}
 	require.ErrorIs(t, ValidateExistingRole(savedRole, role), ErrBindingMismatch)
 }
+
+func TestMachineMetadataGrantIsNamespacedAndReadOnly(t *testing.T) {
+	role, err := NewMachineMetadataRole("fleet-default")
+	require.NoError(t, err)
+	require.Equal(t, "fleet-default", role.Metadata.Namespace)
+	require.Equal(t, []PolicyRule{{APIGroups: []string{"cluster.x-k8s.io"}, Resources: []string{"machines"}, Verbs: []string{"get", "list"}}}, role.Rules)
+	role.Metadata.UID = "role-uid"
+	wantedRole, err := NewMachineMetadataRole("fleet-default")
+	require.NoError(t, err)
+	require.NoError(t, ValidateMachineMetadataRole(role, wantedRole))
+	role.Rules[0].Verbs = []string{"*"}
+	require.ErrorIs(t, ValidateMachineMetadataRole(role, wantedRole), ErrBindingMismatch)
+
+	binding, err := NewMachineMetadataRoleBinding("fleet-default", "machine-provision-sa")
+	require.NoError(t, err)
+	require.Equal(t, "fleet-default", binding.Metadata.Namespace)
+	require.Equal(t, "pve-capi-machine-metadata-reader", binding.RoleRef.Name)
+	require.Equal(t, []BindingSubject{{Kind: "ServiceAccount", Name: "machine-provision-sa", Namespace: "fleet-default"}}, binding.Subjects)
+	binding.Metadata.UID = "binding-uid"
+	wantedBinding, err := NewMachineMetadataRoleBinding("fleet-default", "machine-provision-sa")
+	require.NoError(t, err)
+	require.NoError(t, ValidateMachineMetadataRoleBinding(binding, wantedBinding))
+	binding.Subjects[0].Name = "other-service-account"
+	require.ErrorIs(t, ValidateMachineMetadataRoleBinding(binding, wantedBinding), ErrBindingMismatch)
+}

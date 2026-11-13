@@ -26,6 +26,13 @@ concurrent reservations, one submission winner, process-restart behavior and
 lost-write responses. Its memory store models durable CAS semantics for unit
 tests; it does not model a real Kubernetes API or prove cross-process behavior.
 
+`internal/placement/rancher_metadata_test.go` verifies CAPI machine matching,
+required cluster/pool labels, authorization headers, and fail-closed handling of
+missing or ambiguous machine metadata. Driver tests verify NoCloud ISO contents,
+upload-before-attachment ordering, machine-incarnation ownership, and tag
+normalization validation. They do not prove the machine-provision ServiceAccount
+has CAPI Machine list permission in Rancher's live job.
+
 The existing MAC-address parsing tests are retained.
 
 ## CI

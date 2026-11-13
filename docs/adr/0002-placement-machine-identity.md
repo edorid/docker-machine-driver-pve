@@ -1,0 +1,3 @@
+# Use machine-incarnation identity for placement ownership
+
+Placement VMs need ownership evidence that survives retries and distinguishes replacements, even when VM names or VMIDs are reused. New placement VMs will use a unique machine-incarnation identity recorded in both the placement ledger and VM metadata; Rancher cluster and pool tags are informational and must not authorize deletion. Preserve existing human-written VM descriptions, fail closed on conflicting or uncertain identity, and retain backward-compatible handling for VMs created with the `docker-machine` tag. Legacy single-template provisioning is unchanged.

@@ -71,6 +71,9 @@ func (d *Driver) setPlacementConfig(opts drivers.DriverOptions) error {
 	if !d.PlacementGuestReady {
 		return errors.New("placement requires operator confirmation that selected guest templates provide SSH and passwordless sudo")
 	}
+	if d.CloudInitNetworkSnippet != "" {
+		return errors.New("placement mode uses generated DHCP initialization media; custom network snippets are unsupported")
+	}
 	return nil
 }
 

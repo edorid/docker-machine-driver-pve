@@ -26,9 +26,9 @@ func testInventory() Snapshot {
 			Name: host, Online: true, Reachable: true, TemplateVMID: policy.Templates[host], TemplateReady: true, NetworkReady: true,
 			CPU: 100, MemoryBytes: 1000, FreeMemoryBytes: 1000,
 			Storages: []Storage{
-				{ID: "disk-a", Ready: true, CloneSupported: true, TotalBytes: 10000, FreeBytes: 8000},
-				{ID: "disk-b", Ready: true, CloneSupported: true, TotalBytes: 10000, FreeBytes: 9000},
-				{ID: "forbidden", Ready: true, CloneSupported: true, TotalBytes: 100000, FreeBytes: 100000},
+				{ID: "disk-a", Ready: true, CloneSupported: true, ISOSupported: true, TotalBytes: 10000, FreeBytes: 8000},
+				{ID: "disk-b", Ready: true, CloneSupported: true, ISOSupported: true, TotalBytes: 10000, FreeBytes: 9000},
+				{ID: "forbidden", Ready: true, CloneSupported: true, ISOSupported: true, TotalBytes: 100000, FreeBytes: 100000},
 			},
 		})
 	}

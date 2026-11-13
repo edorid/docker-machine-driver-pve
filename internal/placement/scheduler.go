@@ -27,6 +27,7 @@ type Storage struct {
 	ID             string
 	Ready          bool
 	CloneSupported bool
+	ISOSupported   bool
 	TotalBytes     uint64
 	FreeBytes      uint64
 	AllocatedBytes uint64
@@ -111,14 +112,19 @@ type Snapshot struct {
 
 // Commitment remains durable until safe reconciliation, not merely a timeout.
 type Commitment struct {
-	MachineID     string    `json:"machineId"`
-	OwnerID       string    `json:"ownerId"`
-	GroupID       string    `json:"groupId"`
-	VMID          int       `json:"vmid"`
-	Node          string    `json:"node"`
-	Storage       string    `json:"storage"`
-	Resources     Resources `json:"resources"`
-	BootDiskBytes uint64    `json:"bootDiskBytes"`
+	MachineID          string    `json:"machineId"`
+	OwnerID            string    `json:"ownerId"`
+	IncarnationID      string    `json:"incarnationId,omitempty"`
+	ISOName            string    `json:"isoName,omitempty"`
+	ISOStorage         string    `json:"isoStorage,omitempty"`
+	RancherClusterName string    `json:"rancherClusterName,omitempty"`
+	RancherPoolName    string    `json:"rancherPoolName,omitempty"`
+	GroupID            string    `json:"groupId"`
+	VMID               int       `json:"vmid"`
+	Node               string    `json:"node"`
+	Storage            string    `json:"storage"`
+	Resources          Resources `json:"resources"`
+	BootDiskBytes      uint64    `json:"bootDiskBytes"`
 }
 
 type Candidate struct {

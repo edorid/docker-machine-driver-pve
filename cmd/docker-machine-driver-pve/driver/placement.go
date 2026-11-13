@@ -3,6 +3,8 @@ package driver
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -43,9 +45,17 @@ func (d *Driver) placementIntent() (placement.Intent, error) {
 	if d.DiskSizeGiB > ^uint64(0)/gibibyte {
 		return placement.Intent{}, errors.New("placement resource request overflows")
 	}
+	var identityBytes [16]byte
+	if _, err := rand.Read(identityBytes[:]); err != nil {
+		return placement.Intent{}, fmt.Errorf("generate machine-incarnation identity: %w", err)
+	}
 	return placement.Intent{
-		MachineID: d.MachineName,
-		OwnerID:   d.MachineName,
+		MachineID:          d.MachineName,
+		OwnerID:            d.MachineName,
+		IncarnationID:      hex.EncodeToString(identityBytes[:]),
+		ISOName:            "pve-cloud-init-" + hex.EncodeToString(identityBytes[:]) + ".iso",
+		RancherClusterName: d.RancherClusterName,
+		RancherPoolName:    d.RancherMachinePool,
 		Policy: placement.Policy{
 			GroupID: d.PlacementGroup, AllowedHosts: d.PlacementHosts,
 			AllowedStorages: d.PlacementStorages, Templates: d.PlacementTemplates,
@@ -82,10 +92,20 @@ func (d *Driver) preparePlacementIntent(ctx context.Context, coordinator placeme
 	}
 	if record, found := document.Ledger.Records[intent.MachineID]; found {
 		if record.OwnerID != intent.OwnerID || record.Resources.CPU != intent.Resources.CPU ||
-			record.Resources.MemoryBytes != intent.Resources.MemoryBytes || record.BootDiskBytes != intent.BootDiskBytes {
+			record.Resources.MemoryBytes != intent.Resources.MemoryBytes || record.BootDiskBytes != intent.BootDiskBytes ||
+			(record.RancherClusterName != "" && record.RancherClusterName != intent.RancherClusterName) ||
+			(record.RancherPoolName != "" && record.RancherPoolName != intent.RancherPoolName) {
 			return placement.Intent{}, placement.ErrIdentityConflict
 		}
 		intent.Resources.DiskBytes = record.Resources.DiskBytes
+		intent.IncarnationID = record.IncarnationID
+		intent.ISOName = record.ISOName
+		if record.RancherClusterName != "" {
+			intent.RancherClusterName = record.RancherClusterName
+		}
+		if record.RancherPoolName != "" {
+			intent.RancherPoolName = record.RancherPoolName
+		}
 		return intent, nil
 	}
 	snapshot, err := d.discoverPlacement(ctx, ledgerCommitments(document), intent.MachineID)
@@ -106,6 +126,21 @@ func ledgerCommitments(document placement.Document) []placement.Commitment {
 		commitments = append(commitments, record.Commitment)
 	}
 	return commitments
+}
+
+func (d *Driver) discoverRancherMachineNames(ctx context.Context) error {
+	names, err := placement.DiscoverInClusterRancherMachineNames(ctx, d.MachineName)
+	if err != nil {
+		return err
+	}
+	if d.RancherClusterName != "" && d.RancherClusterName != names.Cluster {
+		return errors.New("configured Rancher cluster name conflicts with CAPI metadata")
+	}
+	if d.RancherMachinePool != "" && d.RancherMachinePool != names.Pool {
+		return errors.New("configured Rancher machine-pool name conflicts with CAPI metadata")
+	}
+	d.RancherClusterName, d.RancherMachinePool = names.Cluster, names.Pool
+	return nil
 }
 
 //nolint:cyclop,wsl // Compute a conservative maximum across every currently eligible mapped template.
@@ -207,6 +242,12 @@ func (d *Driver) reservePlacement(ctx context.Context, coordinator placement.Coo
 
 //nolint:cyclop,nestif,wsl // Persist reservation, claim submission, and recover a recorded task in strict order.
 func (d *Driver) createPlacedVirtualMachine(ctx context.Context) (int, error) {
+	if err := d.discoverRancherMachineNames(ctx); err != nil {
+		return 0, fmt.Errorf("discover Rancher machine tags before reserving or cloning: %w", err)
+	}
+	if err := validateRancherMachineTags(d.RancherClusterName, d.RancherMachinePool); err != nil {
+		return 0, err
+	}
 	coordinator, err := d.newPlacementCoordinator()
 	if err != nil {
 		return 0, err
@@ -253,6 +294,12 @@ func (d *Driver) createPlacedVirtualMachine(ctx context.Context) (int, error) {
 	}
 	if record.Phase != placement.Submitted || record.TaskID == "" {
 		return 0, placement.ErrUncertainOperation
+	}
+	d.placementIncarnationID = record.IncarnationID
+	d.placementISOName = record.ISOName
+	d.placementISOStorage = record.ISOStorage
+	if d.placementISOStorage == "" && record.IncarnationID != "" {
+		return 0, errors.New("placement ledger lacks the ISO storage identity; operator recovery required")
 	}
 	task, err := recordedCloneTask(record.TaskID, record.Node, d.getPVEClient())
 	if err != nil {
@@ -305,6 +352,12 @@ func (d *Driver) revalidateReservedPlacement(ctx context.Context, coordinator pl
 	if err != nil {
 		return fmt.Errorf("no longer safe to submit reserved clone: %w", err)
 	}
+	if record.ISOStorage != "" {
+		isoStorage, err := selectPlacementISOStorage(snapshot, record.Node)
+		if err != nil || isoStorage != record.ISOStorage {
+			return errors.New("reserved initialization ISO storage is unavailable on selected host")
+		}
+	}
 	for _, candidate := range decision.Candidates {
 		if candidate.Node == record.Node && candidate.Storage == record.Storage && candidate.TemplateVMID == intent.Policy.Templates[record.Node] {
 			return nil
@@ -312,6 +365,24 @@ func (d *Driver) revalidateReservedPlacement(ctx context.Context, coordinator pl
 	}
 
 	return errors.New("reserved Proxmox destination is no longer eligible; operator recovery required")
+}
+
+func selectPlacementISOStorage(snapshot placement.Snapshot, host string) (string, error) {
+	var selected string
+	for _, node := range snapshot.Nodes {
+		if node.Name != host {
+			continue
+		}
+		for _, storage := range node.Storages {
+			if storage.Ready && storage.ISOSupported && (selected == "" || storage.ID < selected) {
+				selected = storage.ID
+			}
+		}
+	}
+	if selected == "" {
+		return "", errors.New("no active ISO-capable storage")
+	}
+	return selected, nil
 }
 
 //nolint:gocognit,cyclop,nestif,wsl // Removal retains the durable intent across each external side effect.
@@ -326,7 +397,7 @@ func (d *Driver) removePlaced(ctx context.Context) error {
 	}
 	record, found := document.Ledger.Records[d.MachineName]
 	if !found {
-		vm, _, err := d.findPlacedVM(ctx, 0, d.MachineName)
+		vm, _, err := d.findPlacedVM(ctx, 0, d.MachineName, "")
 		if err != nil {
 			return err
 		}
@@ -348,12 +419,15 @@ func (d *Driver) removePlaced(ctx context.Context) error {
 			return fmt.Errorf("clone task is not terminal; retain removal reservation: %w", waitErr)
 		}
 	}
-	vm, nodeName, err := d.findPlacedVM(ctx, record.VMID, record.MachineID)
+	vm, nodeName, err := d.findPlacedVM(ctx, record.VMID, record.MachineID, record.IncarnationID)
 	if err != nil {
 		return err
 	}
 	if record.Phase == placement.Reserved && vm != nil {
 		return placement.ErrIdentityConflict
+	}
+	if vm != nil && record.ISOName != "" && nodeName != record.Node {
+		return errors.New("placement VM moved from its recorded initialization-media host; retain reservation for operator recovery")
 	}
 	record, err = coordinator.BeginRemoval(ctx, record.MachineID, record.OwnerID)
 	if err != nil {
@@ -365,7 +439,7 @@ func (d *Driver) removePlaced(ctx context.Context) error {
 			return fmt.Errorf("revalidate VM host before removal: %w", err)
 		}
 		current, err := node.VirtualMachine(ctx, record.VMID)
-		if err != nil || current.Name != record.MachineID {
+		if err != nil || current.Name != record.MachineID || !placementOwnershipMatches(current, record.IncarnationID) {
 			return placement.ErrIdentityConflict
 		}
 		if current.IsRunning() {
@@ -377,7 +451,7 @@ func (d *Driver) removePlaced(ctx context.Context) error {
 				return fmt.Errorf("wait for recorded VM stop: %w", err)
 			}
 			current, err = node.VirtualMachine(ctx, record.VMID)
-			if err != nil || current.Name != record.MachineID {
+			if err != nil || current.Name != record.MachineID || !placementOwnershipMatches(current, record.IncarnationID) {
 				return placement.ErrIdentityConflict
 			}
 		}
@@ -389,15 +463,111 @@ func (d *Driver) removePlaced(ctx context.Context) error {
 			return fmt.Errorf("wait for recorded VM deletion: %w", err)
 		}
 	}
-	remaining, _, err := d.findPlacedVM(ctx, record.VMID, record.MachineID)
+	remaining, _, err := d.findPlacedVM(ctx, record.VMID, record.MachineID, record.IncarnationID)
 	if err != nil {
 		return err
 	}
 	if remaining != nil {
 		return errors.New("recorded VM remains visible after deletion; retaining placement reservation")
 	}
+	if err := d.removePlacementISO(ctx, record); err != nil {
+		return fmt.Errorf("remove owned placement initialization ISO: %w", err)
+	}
 	if err := coordinator.CompleteRemoval(ctx, record.MachineID, record.OwnerID); err != nil {
 		return fmt.Errorf("release placement reservation after verified deletion: %w", err)
+	}
+	return nil
+}
+
+func (d *Driver) removePlacementISO(ctx context.Context, record placement.Record) error {
+	if record.ISOName == "" {
+		// Records made before generated initialization media remain removable using
+		// the legacy cloud-init drive and ownership-tag proof.
+		return nil
+	}
+	node, err := d.getPVEClient().Node(ctx, record.Node)
+	if err != nil {
+		return fmt.Errorf("read recorded ISO host %q: %w", record.Node, err)
+	}
+	if record.ISOStorage == "" {
+		return errors.New("placement ledger lacks ISO storage ownership; retain placement reservation")
+	}
+	storage, err := node.Storage(ctx, record.ISOStorage)
+	if err != nil || storage.Enabled != 1 || storage.Active != 1 || !hasContent(storage.Content, "iso") {
+		return errors.New("recorded ISO storage is unavailable; retain placement reservation")
+	}
+	contents, err := storage.GetContent(ctx)
+	if err != nil {
+		return fmt.Errorf("inspect recorded ISO storage: %w", err)
+	}
+	volid := record.ISOStorage + ":iso/" + record.ISOName
+	found := false
+	for _, item := range contents {
+		if item == nil || item.Volid == "" {
+			return placement.ErrIncompleteInventory
+		}
+		if item.Volid == volid {
+			found = true
+		}
+	}
+	statuses, err := d.getPVEClient().Nodes(ctx)
+	if err != nil || len(statuses) == 0 {
+		return errors.New("cannot verify placement ISO is unused cluster-wide")
+	}
+	seen := make(map[string]bool)
+	for _, status := range statuses {
+		if status == nil || status.Node == "" || seen[status.Node] {
+			return placement.ErrIncompleteInventory
+		}
+		seen[status.Node] = true
+		node, err := d.getPVEClient().Node(ctx, status.Node)
+		if err != nil {
+			return err
+		}
+		vms, err := node.VirtualMachines(ctx)
+		if err != nil {
+			return err
+		}
+		for _, vm := range vms {
+			if vm == nil || safeVMID(vm.VMID) == 0 {
+				return placement.ErrIncompleteInventory
+			}
+			full, err := node.VirtualMachine(ctx, safeVMID(vm.VMID))
+			if err != nil || full.VirtualMachineConfig == nil {
+				return errors.New("cannot verify placement ISO is unused cluster-wide")
+			}
+			for _, disk := range full.VirtualMachineConfig.MergeDisks() {
+				if strings.HasPrefix(disk, volid+",") || disk == volid {
+					return errors.New("recorded placement ISO remains in use; retain placement reservation")
+				}
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	iso, err := storage.ISO(ctx, record.ISOName)
+	if err != nil {
+		return fmt.Errorf("read owned placement ISO before deletion: %w", err)
+	}
+	task, err := iso.Delete(ctx)
+	if err != nil {
+		return fmt.Errorf("delete owned placement ISO: %w", err)
+	}
+	if err := d.waitForPVETaskToSucceed(ctx, task); err != nil {
+		return fmt.Errorf("wait for placement ISO deletion: %w", err)
+	}
+	contents, err = storage.GetContent(ctx)
+	if err != nil {
+		return fmt.Errorf("verify placement ISO deletion: %w", err)
+	}
+	for _, item := range contents {
+		if item == nil || item.Volid == "" {
+			return placement.ErrIncompleteInventory
+		}
+		if item.Volid == volid {
+			return errors.New("placement ISO remains visible after deletion; retain reservation")
+		}
 	}
 	return nil
 }
@@ -423,7 +593,7 @@ func recordedCloneTask(id, node string, client *proxmox.Client) (*proxmox.Task, 
 }
 
 //nolint:gocognit,gocyclo,cyclop,wsl // Complete cluster scan proves absence before releasing capacity.
-func (d *Driver) findPlacedVM(ctx context.Context, vmid int, name string) (*proxmox.VirtualMachine, string, error) {
+func (d *Driver) findPlacedVM(ctx context.Context, vmid int, name, incarnationID string) (*proxmox.VirtualMachine, string, error) {
 	statuses, err := d.getPVEClient().Nodes(ctx)
 	if err != nil || len(statuses) == 0 {
 		return nil, "", errors.New("cannot prove placement VM absence from complete Proxmox node inventory")
@@ -460,7 +630,7 @@ func (d *Driver) findPlacedVM(ctx context.Context, vmid int, name string) (*prox
 					return nil, "", placement.ErrIdentityConflict
 				}
 				full, err := node.VirtualMachine(ctx, candidateID)
-				if err != nil || full.Name != name || !full.HasTag(pveMachineTag) {
+				if err != nil || full.Name != name || !placementOwnershipMatches(full, incarnationID) {
 					return nil, "", placement.ErrIdentityConflict
 				}
 				foundVM, foundNode = full, status.Node
@@ -480,6 +650,21 @@ func (d *Driver) findPlacedVM(ctx context.Context, vmid int, name string) (*prox
 		}
 	}
 	return foundVM, foundNode, nil
+}
+
+func placementOwnershipMatches(vm *proxmox.VirtualMachine, incarnationID string) bool {
+	if vm == nil || vm.VirtualMachineConfig == nil {
+		return false
+	}
+	if incarnationID == "" {
+		return vm.HasTag(pveMachineTag)
+	}
+	for _, line := range strings.Split(vm.VirtualMachineConfig.Description, "\n") {
+		if strings.HasPrefix(line, placementIdentityMarker) {
+			return strings.TrimPrefix(line, placementIdentityMarker) == incarnationID
+		}
+	}
+	return false
 }
 
 func safeVMID(value proxmox.StringOrUint64) int {

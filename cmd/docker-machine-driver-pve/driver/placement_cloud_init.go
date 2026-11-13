@@ -6,21 +6,80 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/luthermonson/go-proxmox"
 	"github.com/rancher/machine/libmachine/log"
+	yaml "gopkg.in/yaml.v3"
 )
+
+// placementCloudInitNetwork uses the clone's MAC rather than assuming a guest
+// interface name. It refuses to silently discard any other template interfaces.
+func placementCloudInitNetwork(config *proxmox.VirtualMachineConfig, interfaceName string) (string, error) {
+	if config == nil || len(config.MergeNets()) != 1 {
+		return "", errors.New("generated cloud-init networking requires exactly one interface")
+	}
+	index, err := networkInterfaceNumber(interfaceName)
+	if err != nil {
+		return "", err
+	}
+	if err := requireDynamicCloudInitAddress(config, interfaceName, index); err != nil {
+		return "", err
+	}
+	device := config.MergeNets()[interfaceName]
+	model, macValue, found := strings.Cut(strings.SplitN(device, ",", 2)[0], "=")
+	mac, err := net.ParseMAC(macValue)
+	if !found || model == "" || err != nil || len(mac) != 6 {
+		return "", errors.New("generated cloud-init networking requires an explicit Ethernet MAC address")
+	}
+	network := map[string]any{
+		"version": 2,
+		"ethernets": map[string]any{
+			"primary": map[string]any{"match": map[string]string{"macaddress": strings.ToLower(mac.String())}, "dhcp4": true},
+		},
+	}
+	data, err := yaml.Marshal(network)
+	if err != nil {
+		return "", fmt.Errorf("encode generated cloud-init network: %w", err)
+	}
+	return string(data), nil
+}
 
 const (
 	cloudInitAuxiliaryBytes = 4 * mebibyte
 	placementTagCapacity    = 2
 	rancherTagValueMax      = 48
 )
+
+const placementIdentityMarker = "pve-machine-incarnation="
+
+func placementDescription(description, identity string) (string, error) {
+	if identity == "" {
+		return description, nil
+	}
+	lines := strings.Split(description, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if strings.HasPrefix(line, placementIdentityMarker) {
+			if strings.TrimPrefix(line, placementIdentityMarker) != identity {
+				return "", errors.New("VM description contains a conflicting machine-incarnation identity")
+			}
+			continue
+		}
+		kept = append(kept, line)
+	}
+	base := strings.TrimRight(strings.Join(kept, "\n"), "\n")
+	if base != "" {
+		base += "\n"
+	}
+	return base + placementIdentityMarker + identity, nil
+}
 
 var networkSnippetPattern = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9_.-]*):snippets/([A-Za-z0-9][A-Za-z0-9_.-]*\.(?:yaml|yml))$`)
 
@@ -86,10 +145,26 @@ func (d *Driver) initializePlaced(ctx context.Context) error {
 	if err != nil || vm.VirtualMachineConfig == nil || vm.Name != d.MachineName {
 		return errors.New("cloned Proxmox machine identity could not be verified")
 	}
+	if d.placementIncarnationID != "" {
+		if err := d.discoverRancherMachineNames(ctx); err != nil {
+			return fmt.Errorf("revalidate Rancher machine metadata: %w", err)
+		}
+		if err := validateRancherMachineTags(d.RancherClusterName, d.RancherMachinePool); err != nil {
+			return err
+		}
+	}
 
 	d.Tags = d.managedMachineTags(vm.Tags)
+	description, err := placementDescription(vm.VirtualMachineConfig.Description, d.placementIncarnationID)
+	if err != nil {
+		return err
+	}
 
-	task, err := vm.Config(ctx, proxmox.VirtualMachineOption{Name: "tags", Value: d.Tags})
+	options := []proxmox.VirtualMachineOption{{Name: "tags", Value: d.Tags}}
+	if d.placementIncarnationID != "" {
+		options = append(options, proxmox.VirtualMachineOption{Name: "description", Value: description})
+	}
+	task, err := vm.Config(ctx, options...)
 	if err != nil {
 		return fmt.Errorf("tag placed VM: %w", err)
 	}
@@ -106,7 +181,12 @@ func (d *Driver) initializePlaced(ctx context.Context) error {
 		return err
 	}
 
-	if err := d.setupNativeCloudInit(ctx); err != nil {
+	if d.placementIncarnationID != "" {
+		if err := d.setupGeneratedPlacementISO(ctx, vm); err != nil {
+			return err
+		}
+	} else if err := d.setupNativeCloudInit(ctx); err != nil {
+		// Existing placement reservations and VMs retain the old native-drive path.
 		return err
 	}
 
@@ -115,12 +195,114 @@ func (d *Driver) initializePlaced(ctx context.Context) error {
 	}
 
 	if err := d.waitForCloudinit(); err != nil {
-		return fmt.Errorf("wait for native cloud-init: %w", err)
+		return fmt.Errorf("wait for cloud-init: %w", err)
 	}
 
 	log.Info("Placed VM is initialized")
 
 	return nil
+}
+
+// setupGeneratedPlacementISO uploads the ledger-named ISO before attaching it.
+// Existing content is never overwritten: any prior/ambiguous upload requires recovery.
+func (d *Driver) setupGeneratedPlacementISO(ctx context.Context, vm *proxmox.VirtualMachine) error {
+	if d.placementISOName == "" || d.placementISOStorage == "" || d.placementIncarnationID == "" {
+		return errors.New("durable placement initialization-media identity is missing")
+	}
+	config := vm.VirtualMachineConfig
+	if config == nil || config.CICustom != "" {
+		return errors.New("placement templates with custom cloud-init snippets are unsupported")
+	}
+	interfaceName, err := placementNetworkInterface(config)
+	if err != nil {
+		return err
+	}
+	network, err := placementCloudInitNetwork(config, interfaceName)
+	if err != nil {
+		return err
+	}
+	userdata, err := d.generateCloudinitUserdata()
+	if err != nil {
+		return err
+	}
+	metadata, err := d.generateCloudinitMetadata()
+	if err != nil {
+		return err
+	}
+	metadata, err = placementMetadata(metadata, d.MachineName, d.placementIncarnationID)
+	if err != nil {
+		return err
+	}
+	uploadDir, err := os.MkdirTemp(os.TempDir(), "pve-placement-iso-upload-")
+	if err != nil {
+		return fmt.Errorf("create private initialization ISO directory: %w", err)
+	}
+	defer os.RemoveAll(uploadDir)
+	isoPath, err := buildPlacementISO(uploadDir, userdata, metadata, network)
+	if err != nil {
+		return fmt.Errorf("build machine initialization ISO: %w", err)
+	}
+	uploadPath := filepath.Join(uploadDir, d.placementISOName)
+	if err := os.Rename(isoPath, uploadPath); err != nil {
+		return fmt.Errorf("name initialization ISO for Proxmox upload: %w", err)
+	}
+	node, err := d.getPVEClient().Node(ctx, d.placementNode)
+	if err != nil {
+		return fmt.Errorf("read ISO upload node: %w", err)
+	}
+	storage, err := node.Storage(ctx, d.placementISOStorage)
+	if err != nil || storage.Enabled != 1 || storage.Active != 1 || !hasContent(storage.Content, "iso") {
+		return errors.New("selected placement storage is not active and ISO-capable")
+	}
+	contents, err := storage.GetContent(ctx)
+	if err != nil {
+		return fmt.Errorf("verify initialization ISO absence before upload: %w", err)
+	}
+	for _, content := range contents {
+		if content == nil || content.Volid == d.placementISOStorage+":iso/"+d.placementISOName {
+			return errors.New("placement initialization ISO already exists; refusing to overwrite uncertain ownership")
+		}
+	}
+	upload, err := storage.Upload("iso", uploadPath)
+	if err != nil {
+		return fmt.Errorf("upload placement initialization ISO; retain ledger reservation: %w", err)
+	}
+	if err := d.waitForPVETaskToSucceed(ctx, upload); err != nil {
+		return fmt.Errorf("wait for placement initialization ISO upload: %w", err)
+	}
+	device := ""
+	for name, value := range config.MergeDisks() {
+		if strings.Contains(value, "cloudinit") {
+			device = name
+			break
+		}
+	}
+	if device == "" {
+		return errors.New("cloned VM has no cloud-init media slot")
+	}
+	value := d.placementISOStorage + ":iso/" + d.placementISOName + ",media=cdrom"
+	task, err := vm.Config(ctx, proxmox.VirtualMachineOption{Name: device, Value: value})
+	if err != nil {
+		return fmt.Errorf("attach placement initialization ISO; retain ISO and ledger reservation: %w", err)
+	}
+	if err := d.waitForPVETaskToSucceed(ctx, task); err != nil {
+		return fmt.Errorf("wait for placement initialization ISO attachment: %w", err)
+	}
+	return nil
+}
+
+func placementMetadata(existing, machineName, incarnationID string) (string, error) {
+	var metadata map[string]any
+	if err := yaml.Unmarshal([]byte(existing), &metadata); err != nil || metadata == nil {
+		return "", errors.New("generated cloud-init metadata is invalid")
+	}
+	metadata["instance-id"] = incarnationID
+	metadata["hostname"] = machineName
+	encoded, err := yaml.Marshal(metadata)
+	if err != nil {
+		return "", fmt.Errorf("encode machine-incarnation metadata: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func (d *Driver) setupNativeCloudInit(ctx context.Context) error {
@@ -275,7 +457,20 @@ func nonEmptyTags(configured []string, existing, managed string) []string {
 }
 
 func (d *Driver) managedMachineTags(existing string) []string {
-	tags := nonEmptyTags(d.Tags, existing, pveMachineTag)
+	managed := pveMachineTag
+	if d.placementIncarnationID != "" {
+		managed = ""
+	}
+	tags := nonEmptyTags(d.Tags, existing, managed)
+	if d.placementIncarnationID != "" {
+		filtered := tags[:0]
+		for _, tag := range tags {
+			if tag != pveMachineTag {
+				filtered = append(filtered, tag)
+			}
+		}
+		tags = filtered
+	}
 	for _, item := range []struct {
 		kind  string
 		value string
@@ -304,15 +499,22 @@ func rancherInfoTag(kind, value string) string {
 		} else {
 			separator = true
 		}
-		if normalized.Len() >= rancherTagValueMax {
-			break
-		}
 	}
 	value = strings.Trim(normalized.String(), "-_")
-	if value == "" {
+	if value == "" || len(value) > rancherTagValueMax {
 		return ""
 	}
 	return "rancher-" + kind + "-" + value
+}
+
+func validateRancherMachineTags(clusterName, poolName string) error {
+	if strings.TrimSpace(clusterName) == "" || strings.TrimSpace(poolName) == "" {
+		return errors.New("Rancher cluster and machine-pool names are required for placement tags")
+	}
+	if rancherInfoTag("cluster", clusterName) == "" || rancherInfoTag("pool", poolName) == "" {
+		return errors.New("Rancher cluster or machine-pool name cannot be represented as a Proxmox tag")
+	}
+	return nil
 }
 
 func hasCloudInitDisk(config *proxmox.VirtualMachineConfig) bool {

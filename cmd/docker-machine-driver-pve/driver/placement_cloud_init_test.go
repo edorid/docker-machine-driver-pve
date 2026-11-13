@@ -13,7 +13,128 @@ import (
 	"github.com/luthermonson/go-proxmox"
 	"github.com/rancher/machine/libmachine/ssh"
 	"github.com/stretchr/testify/require"
+	yaml "gopkg.in/yaml.v3"
 )
+
+func TestPlacementCloudInitNetworkUsesDHCPWithoutStaticDNS(t *testing.T) {
+	config := &proxmox.VirtualMachineConfig{Net0: "virtio=BC:24:11:12:34:56,bridge=vmbr0", IPConfig0: "ip=dhcp"}
+	network, err := placementCloudInitNetwork(config, "net0")
+	require.NoError(t, err)
+	var parsed map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(network), &parsed))
+	require.NotContains(t, network, "nameserver")
+	require.NotContains(t, network, "search")
+	require.Contains(t, strings.ToLower(network), "bc:24:11:12:34:56")
+	require.Contains(t, network, "dhcp4")
+}
+
+func TestPlacementCloudInitNetworkRejectsAmbiguousInterfaces(t *testing.T) {
+	for _, config := range []*proxmox.VirtualMachineConfig{
+		{Net0: "virtio,bridge=vmbr0", IPConfig0: "ip=dhcp"},
+		{Net0: "virtio=BC:24:11:12:34:56,bridge=vmbr0", Net1: "virtio=BC:24:11:12:34:57,bridge=vmbr0", IPConfig0: "ip=dhcp"},
+	} {
+		_, err := placementCloudInitNetwork(config, "net0")
+		require.Error(t, err)
+	}
+}
+
+func TestPlacementDescriptionPreservesTextAndRejectsConflictingIdentity(t *testing.T) {
+	description, err := placementDescription("Owned by operations", "incarnation-a")
+	require.NoError(t, err)
+	require.Equal(t, "Owned by operations\npve-machine-incarnation=incarnation-a", description)
+	replayed, err := placementDescription(description, "incarnation-a")
+	require.NoError(t, err)
+	require.Equal(t, description, replayed)
+	_, err = placementDescription(description, "incarnation-b")
+	require.Error(t, err)
+}
+
+func TestPlacementOwnershipRequiresExactIdentityOrLegacyMarker(t *testing.T) {
+	vm := &proxmox.VirtualMachine{VirtualMachineConfig: &proxmox.VirtualMachineConfig{Description: "human text\npve-machine-incarnation=id-a"}}
+	require.True(t, placementOwnershipMatches(vm, "id-a"))
+	require.False(t, placementOwnershipMatches(vm, "id-b"))
+	vm.VirtualMachineConfig.Tags = pveMachineTag
+	require.True(t, placementOwnershipMatches(vm, ""))
+	vm.VirtualMachineConfig.Description = "human text"
+	require.False(t, placementOwnershipMatches(vm, "id-a"))
+}
+
+func TestNewPlacementTagsDropLegacyOwnershipMarker(t *testing.T) {
+	driver := &Driver{config: config{Tags: []string{"team"}, RancherClusterName: "Production Cluster", RancherMachinePool: "Workers East Blue"}}
+	driver.placementIncarnationID = "incarnation-a"
+	require.Equal(t, []string{"team", "rancher-cluster-production-cluster", "rancher-pool-workers-east-blue"}, driver.managedMachineTags("docker-machine;rancher-cluster-production-cluster;rancher-pool-workers-east-blue"))
+}
+
+func TestRancherMachineTagsRejectMissingOrTruncatedNames(t *testing.T) {
+	require.Error(t, validateRancherMachineTags("cluster-a", ""))
+	require.Error(t, validateRancherMachineTags(strings.Repeat("cluster", 9), "pool-a"))
+	require.NoError(t, validateRancherMachineTags("cluster-a", "pool-a"))
+	require.Empty(t, rancherInfoTag("cluster", strings.Repeat("a", rancherTagValueMax+1)))
+}
+
+func TestPlacementMetadataUsesIncarnationIdentity(t *testing.T) {
+	metadata, err := placementMetadata("instance-id: old\nhostname: old\n", "worker-1", "incarnation-a")
+	require.NoError(t, err)
+	var values map[string]string
+	require.NoError(t, yaml.Unmarshal([]byte(metadata), &values))
+	require.Equal(t, "incarnation-a", values["instance-id"])
+	require.Equal(t, "worker-1", values["hostname"])
+}
+
+func TestGeneratedPlacementISOUploadsBeforeAttachment(t *testing.T) {
+	const upid = "UPID:pve1:00001234:00000042:67300000:qmconfig:106:root@pam:"
+	var uploaded, attached bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var data any
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve1/status":
+			data = map[string]any{}
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve1/qemu/106/status/current":
+			data = map[string]any{"vmid": 106, "name": "worker-1"}
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve1/qemu/106/config":
+			data = map[string]any{"net0": "virtio=BC:24:11:12:34:56,bridge=vmbr0", "ipconfig0": "ip=dhcp", "ide2": "local:cloudinit"}
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve1/storage/local/status":
+			data = map[string]any{"storage": "local", "enabled": 1, "active": 1, "content": "iso", "total": 1000000}
+		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve1/storage/local/content":
+			data = []any{}
+		case r.Method == http.MethodPost && r.URL.Path == "/api2/json/nodes/pve1/storage/local/upload":
+			require.NoError(t, r.ParseMultipartForm(16<<20))
+			require.Equal(t, "iso", r.FormValue("content"))
+			_, file, err := r.FormFile("filename")
+			require.NoError(t, err)
+			require.Equal(t, "pve-cloud-init-incarnation.iso", file.Filename)
+			uploaded = true
+			data = upid
+		case r.Method == http.MethodPost && r.URL.Path == "/api2/json/nodes/pve1/qemu/106/config":
+			require.True(t, uploaded, "ISO upload must finish before attachment")
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			require.Equal(t, "local:iso/pve-cloud-init-incarnation.iso,media=cdrom", body["ide2"])
+			attached = true
+			data = upid
+		case strings.HasPrefix(r.URL.Path, "/api2/json/nodes/pve1/tasks/") && strings.HasSuffix(r.URL.Path, "/status"):
+			data = map[string]any{"upid": upid, "node": "pve1", "status": "stopped", "exitstatus": "OK"}
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer server.Close()
+
+	d := NewDriver("worker-1", t.TempDir())
+	d.URL, d.TokenID, d.TokenSecret, d.InsecureTLS = server.URL, "user@pve!test", "secret", true
+	d.placementNode, d.placementISOStorage = "pve1", "local"
+	d.placementISOName, d.placementIncarnationID = "pve-cloud-init-incarnation.iso", "incarnation"
+	d.SSHKeyPath = filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, os.WriteFile(d.GetSSHPublicKeyPath(), []byte("ssh-rsa AAAA test\n"), 0600))
+	vm, err := d.getPVEVirtualMachineOnNode(t.Context(), 106, "pve1")
+	require.NoError(t, err)
+	require.NoError(t, d.setupGeneratedPlacementISO(t.Context(), vm))
+	require.True(t, uploaded)
+	require.True(t, attached)
+}
 
 func TestNativeCloudInitURLencodesSSHKeyForProxmox(t *testing.T) {
 	const upid = "UPID:pve1:00001234:00000042:67300000:qmconfig:106:root@pam:"

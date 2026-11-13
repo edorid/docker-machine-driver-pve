@@ -164,7 +164,7 @@ func normalizedStorages(storages proxmox.Storages) ([]placement.Storage, error) 
 		}
 		result = append(result, placement.Storage{
 			ID: storage.Name, Ready: storage.Enabled == 1 && storage.Active == 1 && storage.Total > 0,
-			CloneSupported: hasContent(storage.Content, "images"), TotalBytes: storage.Total,
+			CloneSupported: hasContent(storage.Content, "images"), ISOSupported: hasContent(storage.Content, "iso"), TotalBytes: storage.Total,
 			FreeBytes: storage.Avail, AllocatedBytes: storage.Total - storage.Avail,
 		})
 	}
@@ -202,11 +202,11 @@ func inspectVM(
 	if !found {
 		return placement.Machine{}, false, nil
 	}
-	if vm.Name != commitment.MachineID || !tagPresent(vm.Tags, pveMachineTag) {
+	if vm.Name != commitment.MachineID || (commitment.IncarnationID == "" && !tagPresent(vm.Tags, pveMachineTag)) {
 		return placement.Machine{}, false, placement.ErrIdentityConflict
 	}
 	observedVM, err := node.VirtualMachine(ctx, vmid)
-	if err != nil || observedVM.Name != commitment.MachineID || !observedVM.HasTag(pveMachineTag) || observedVM.VirtualMachineConfig == nil {
+	if err != nil || observedVM.Name != commitment.MachineID || !placementOwnershipMatches(observedVM, commitment.IncarnationID) || observedVM.VirtualMachineConfig == nil {
 		return placement.Machine{}, false, placement.ErrIdentityConflict
 	}
 	storage, err := vmStorageLocation(observedVM.VirtualMachineConfig)
@@ -232,7 +232,7 @@ func (d *Driver) inspectPlacementTemplate(ctx context.Context, node *proxmox.Nod
 	if template.VirtualMachineConfig == nil || template.VirtualMachineConfig.Template != 1 {
 		return vmid, false, false, 0, 0, nil
 	}
-	if !hasCloudInitDisk(template.VirtualMachineConfig) ||
+	if !hasCloudInitDisk(template.VirtualMachineConfig) || template.VirtualMachineConfig.CICustom != "" ||
 		(template.VirtualMachineConfig.Agent != "1" && !strings.Contains(template.VirtualMachineConfig.Agent, "enabled=1")) {
 		return vmid, false, false, 0, 0, nil
 	}

@@ -29,8 +29,11 @@ type Driver struct {
 	pveClient *proxmox.Client
 
 	// Proxmox VE ID of the current machine.
-	PVEMachineID  *int
-	placementNode string
+	PVEMachineID           *int
+	placementNode          string
+	placementIncarnationID string
+	placementISOName       string
+	placementISOStorage    string
 }
 
 // Creates a new driver.
@@ -104,6 +107,12 @@ func (d *Driver) PreCreateCheck() error {
 
 //nolint:wsl // Run fresh policy and inventory validation before permitting a placement create.
 func (d *Driver) preCreateCheckPlacement(ctx context.Context) error {
+	if err := d.discoverRancherMachineNames(ctx); err != nil {
+		return fmt.Errorf("discover Rancher machine tags: %w", err)
+	}
+	if err := validateRancherMachineTags(d.RancherClusterName, d.RancherMachinePool); err != nil {
+		return err
+	}
 	coordinator, err := d.newPlacementCoordinator()
 	if err != nil {
 		return err

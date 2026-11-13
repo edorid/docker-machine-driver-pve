@@ -80,7 +80,8 @@ func (m *memoryStore) CompareAndSwap(ctx context.Context, previous Document, led
 
 func testIntent(index int) Intent {
 	return Intent{
-		MachineID: fmt.Sprintf("machine-%d", index), OwnerID: fmt.Sprintf("owner-%d", index), VMID: 100 + index,
+		MachineID: fmt.Sprintf("machine-%d", index), OwnerID: fmt.Sprintf("owner-%d", index), IncarnationID: fmt.Sprintf("incarnation-%d", index), ISOName: fmt.Sprintf("pve-cloud-init-incarnation-%d.iso", index),
+		RancherClusterName: "cluster-a", RancherPoolName: "workers", VMID: 100 + index,
 		Policy: testPolicy(), Resources: testResources(), BootDiskBytes: 32 << 30,
 	}
 }
@@ -97,6 +98,9 @@ func TestReserveReplayAndExactlyOneSubmission(t *testing.T) {
 	intent := testIntent(1)
 	first, _, err := coordinator.Reserve(t.Context(), intent, discoverTestInventory)
 	require.NoError(t, err)
+	require.Equal(t, intent.IncarnationID, first.IncarnationID)
+	require.Equal(t, intent.ISOName, first.ISOName)
+	require.Equal(t, "disk-a", first.ISOStorage)
 	replay, _, err := coordinator.Reserve(t.Context(), intent, discoverTestInventory)
 	require.NoError(t, err)
 	require.Equal(t, first, replay)
@@ -125,6 +129,42 @@ func TestReserveReplayAndExactlyOneSubmission(t *testing.T) {
 
 	_, err = coordinator.RecordTask(t.Context(), intent.MachineID, intent.OwnerID, submitting.SubmissionToken, "UPID:different")
 	require.ErrorIs(t, err, ErrUncertainOperation)
+}
+
+func TestSelectISOStorageChoosesActiveCapableStorageOnSelectedHost(t *testing.T) {
+	snapshot := testInventory()
+	for index := range snapshot.Nodes {
+		if snapshot.Nodes[index].Name == "host-a" {
+			snapshot.Nodes[index].Storages = []Storage{
+				{ID: "z-iso", Ready: true, ISOSupported: true},
+				{ID: "images-only", Ready: true, CloneSupported: true},
+				{ID: "a-iso", Ready: true, ISOSupported: true},
+			}
+		}
+	}
+	selected, err := selectISOStorage(snapshot, "host-a")
+	require.NoError(t, err)
+	require.Equal(t, "a-iso", selected)
+	_, err = selectISOStorage(snapshot, "unknown-host")
+	require.Error(t, err)
+}
+
+func TestRancherNameCollisionRejectsDistinctNamesWithSameNormalizedTag(t *testing.T) {
+	require.True(t, rancherNameCollision("Production Cluster", "production-cluster"))
+	require.False(t, rancherNameCollision("production", "production"))
+	require.False(t, rancherNameCollision("production", "staging"))
+}
+
+func TestReserveRejectsPersistedRancherTagCollision(t *testing.T) {
+	coordinator, _ := newTestCoordinator()
+	first := testIntent(1)
+	first.RancherClusterName = "Production Cluster"
+	_, _, err := coordinator.Reserve(t.Context(), first, discoverTestInventory)
+	require.NoError(t, err)
+	second := testIntent(2)
+	second.RancherClusterName = "production-cluster"
+	_, _, err = coordinator.Reserve(t.Context(), second, discoverTestInventory)
+	require.ErrorContains(t, err, "collide after Proxmox tag normalization")
 }
 
 func TestConcurrentReservationsAndSubmission(t *testing.T) {
