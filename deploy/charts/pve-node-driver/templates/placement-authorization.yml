@@ -268,7 +268,7 @@ spec:
             - name: PLACEMENT_LEDGER_DEFAULT_CPU
               value: {{ .Values.placement.capacityPolicy.default.cpu | quote }}
             - name: PLACEMENT_LEDGER_DEFAULT_MEMORY_BYTES
-              value: {{ .Values.placement.capacityPolicy.default.memoryBytes | quote }}
+              value: {{ .Values.placement.capacityPolicy.default.memoryBytes | int64 | quote }}
             - name: PLACEMENT_LEDGER_NAMESPACE
               value: {{ .Values.placement.initialLedgerNamespace | quote }}
             {{- if .Values.placement.inventoryAPI.enabled }}

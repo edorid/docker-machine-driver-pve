@@ -17,8 +17,9 @@ validate it against your Rancher and Proxmox environment before production use.
   `rke.cattle.io/rke-machine-pool-name` labels. Missing, ambiguous, or denied
   metadata blocks provisioning. The controller revokes this grant after Rancher
   reports successful machine removal.
-- Install the chart's placement CRD and authorization controller. Configure
-  positive shared CPU and memory reserves with
+- Install the chart's placement CRD and authorization controller. The chart
+  defaults to a reserve of 1 CPU and 1 GiB per host; adjust these positive
+  shared CPU and memory reserves for your environment with
   `placement.capacityPolicy.default.cpu` and
   `placement.capacityPolicy.default.memoryBytes`. The first inventory request
   creates a ledger for the selected Proxmox endpoint using these defaults.

@@ -44,3 +44,9 @@ jobs:
         run: |
           helm lint ./deploy/charts/pve-node-driver
           helm template pve-node-driver ./deploy/charts/pve-node-driver --namespace fleet-default --include-crds > rendered-chart.yaml
+          grep -A 1 'name: PLACEMENT_LEDGER_DEFAULT_CPU' rendered-chart.yaml | grep -q 'value: "1"'
+          grep -A 1 'name: PLACEMENT_LEDGER_DEFAULT_MEMORY_BYTES' rendered-chart.yaml | grep -q 'value: "1073741824"'
+          if helm template pve-node-driver ./deploy/charts/pve-node-driver --set placement.capacityPolicy.default.cpu=0 > /dev/null 2>&1; then
+            echo "Expected zero CPU reserve to be rejected" >&2
+            exit 1
+          fi

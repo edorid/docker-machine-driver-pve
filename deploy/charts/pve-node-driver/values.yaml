@@ -11,8 +11,8 @@ placement:
   initialClusterID: ""
   capacityPolicy:
     default:
-      cpu: 0
-      memoryBytes: 0
+      cpu: 1
+      memoryBytes: 1073741824
   authorization:
     deploymentName: pve-placement-authorizer
     serviceAccountName: pve-placement-authorizer

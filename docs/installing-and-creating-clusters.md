@@ -17,8 +17,9 @@ authorization controller.
   Proxmox host that will be available for placement. Templates must have a
   usable boot disk, cloud-init, a guest agent, and DHCP networking. Verify that
   the configured SSH user can connect and use passwordless `sudo`.
-- For placement, configure shared CPU and memory reserves in the Helm values.
-  Each endpoint gets a separate ledger, initialized with those defaults on the
+- For placement, review the shared CPU and memory reserves in the Helm values.
+  Current chart defaults reserve 1 CPU and 1 GiB per host; adjust them for your
+  environment. Each endpoint gets a separate ledger, initialized on the
   first inventory request. The endpoint identity is a SHA-256 fingerprint of
   the normalized Proxmox hostname and port; tokens and Rancher credential IDs
   are not part of it. Use one canonical endpoint per Proxmox cluster. Do not
@@ -53,9 +54,7 @@ Run Helm against the Rancher management cluster, not the downstream cluster
 being created. Replace the version below with the desired published release:
 
 ```sh
-export PVE_NODE_DRIVER_VERSION=1.2.0-rc12
-: "${PVE_RESERVED_HOST_CPUS:?Set the CPU reserve for Proxmox host services}"
-: "${PVE_RESERVED_HOST_MEMORY_BYTES:?Set the memory reserve in bytes}"
+export PVE_NODE_DRIVER_VERSION="<published-chart-version>"
 
 helm repo add pve-node-driver https://edorid.github.io/docker-machine-driver-pve
 helm repo update
@@ -64,14 +63,17 @@ helm upgrade --install pve-node-driver \
   --version "${PVE_NODE_DRIVER_VERSION}" \
   --namespace cattle-ui-plugin-system \
   --create-namespace \
-  --set placement.capacityPolicy.default.cpu="${PVE_RESERVED_HOST_CPUS}" \
-  --set placement.capacityPolicy.default.memoryBytes="${PVE_RESERVED_HOST_MEMORY_BYTES}" \
   --wait
 ```
 
-Choose reserves appropriate for your Proxmox hosts. These shared defaults seed
-each endpoint's ledger; do not set them to zero. Optional per-host overrides
-can be applied to an individual ledger's `spec.capacityPolicy.hosts`.
+The chart defaults to 1 CPU and 1073741824 bytes (1 GiB) per host. Choose
+reserves appropriate for your Proxmox hosts; override the defaults with
+`--set placement.capacityPolicy.default.cpu=<cpus>` and
+`--set placement.capacityPolicy.default.memoryBytes=<bytes>` as needed. Both
+must be positive. These values seed each new endpoint ledger; changing Helm
+values does not automatically update existing ledger policies. Optional per-host
+overrides can be applied to an individual ledger's `spec.capacityPolicy.hosts`.
+Older chart releases, including `1.2.0-rc22`, require explicit reserve values.
 
 The chart enables `placement.inventoryAPI.enabled` by default. To explicitly
 disable inventory discovery, set `--set placement.inventoryAPI.enabled=false`.
