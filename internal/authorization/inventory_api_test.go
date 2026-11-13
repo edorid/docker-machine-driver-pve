@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/edorid/docker-machine-driver-pve/internal/placement"
 	"github.com/stretchr/testify/require"
 )
 
@@ -115,7 +116,12 @@ func TestInventoryAPIRequiresTrustedAggregatorIdentity(t *testing.T) {
 }
 
 func TestInventoryAPIAuthorizesSecretBeforeDiscovery(t *testing.T) {
+	t.Setenv("PLACEMENT_LEDGER_DEFAULT_CPU", "2")
+	t.Setenv("PLACEMENT_LEDGER_DEFAULT_MEMORY_BYTES", "1073741824")
 	var secretReads, discoveries int
+	ledgerCreated := false
+	clusterID, ledgerName, err := placement.EndpointIdentity("https://proxmox.example:8006")
+	require.NoError(t, err)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case subjectAccessReviewPath:
@@ -123,6 +129,16 @@ func TestInventoryAPIAuthorizesSecretBeforeDiscovery(t *testing.T) {
 		case "/api/v1/namespaces/cattle-global-data/secrets/cc-example":
 			secretReads++
 			_, _ = writer.Write([]byte(`{"metadata":{"name":"cc-example","annotations":{"provisioning.cattle.io/driver":"pve"}},"data":{"pvecredentialConfig-url":"aHR0cHM6Ly9wcm94bW94LmV4YW1wbGU6ODAwNg==","pvecredentialConfig-tokenId":"aWQ=","pvecredentialConfig-tokenSecret":"c2VjcmV0"}}`))
+		case "/apis/placement.pve.edorid.github.io/v1alpha1/namespaces/fleet-default/proxmoxplacementledgers/" + ledgerName:
+			if !ledgerCreated {
+				http.NotFound(writer, request)
+				return
+			}
+			_, _ = writer.Write([]byte(`{"apiVersion":"placement.pve.edorid.github.io/v1alpha1","kind":"ProxmoxPlacementLedger","spec":{"clusterId":"` + clusterID + `"}}`))
+		case "/apis/placement.pve.edorid.github.io/v1alpha1/namespaces/fleet-default/proxmoxplacementledgers":
+			require.Equal(t, http.MethodPost, request.Method)
+			ledgerCreated = true
+			writer.WriteHeader(http.StatusCreated)
 		default:
 			t.Errorf("unexpected API request %s", request.URL.Path)
 			http.NotFound(writer, request)
@@ -149,6 +165,9 @@ func TestInventoryAPIAuthorizesSecretBeforeDiscovery(t *testing.T) {
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
 	require.Equal(t, "ProxmoxInventory", body["kind"])
+	require.Equal(t, map[string]any{
+		"clusterId": clusterID, "ledgerName": ledgerName, "ledgerNamespace": "fleet-default",
+	}, body["placement"])
 	require.NotContains(t, response.Body.String(), "secret")
 }
 

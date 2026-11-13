@@ -9,6 +9,10 @@ placement:
   ledgerName: pve-placement-ledger
   initialLedgerNamespace: fleet-default
   initialClusterID: ""
+  capacityPolicy:
+    default:
+      cpu: 0
+      memoryBytes: 0
   authorization:
     deploymentName: pve-placement-authorizer
     serviceAccountName: pve-placement-authorizer

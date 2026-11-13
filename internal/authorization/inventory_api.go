@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/edorid/docker-machine-driver-pve/internal/placement"
 	"github.com/luthermonson/go-proxmox"
 )
 
@@ -116,12 +117,33 @@ func (api inventoryAPI) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		http.Error(writer, `{"error":"Proxmox inventory discovery failed"}`, http.StatusBadGateway)
 		return
 	}
+	clusterID, ledgerName, err := placement.EndpointIdentity(credential.URL)
+	if err != nil {
+		http.Error(writer, `{"error":"credential URL is invalid"}`, http.StatusBadRequest)
+		return
+	}
+	ledgerNamespace := os.Getenv("PLACEMENT_LEDGER_NAMESPACE")
+	if ledgerNamespace == "" {
+		ledgerNamespace = "fleet-default"
+	}
+	if err := api.kubernetes.ensureEndpointLedger(request.Context(), LedgerRef{
+		Namespace: ledgerNamespace, Name: ledgerName, ClusterID: clusterID,
+	}); err != nil {
+		log.Printf("inventory API: initialize endpoint placement ledger: %s", err.Error())
+		http.Error(writer, `{"error":"placement ledger initialization failed"}`, http.StatusServiceUnavailable)
+		return
+	}
 	writeJSON(writer, http.StatusOK, map[string]any{
 		"apiVersion":  inventoryAPIGroup + "/" + inventoryAPIVersion,
 		"kind":        "ProxmoxInventory",
 		"metadata":    map[string]string{"name": name, "namespace": cloudCredentialNamespace},
 		"insecureTLS": credential.InsecureTLS,
-		"inventory":   inventory,
+		"placement": map[string]string{
+			"clusterId":       clusterID,
+			"ledgerName":      ledgerName,
+			"ledgerNamespace": ledgerNamespace,
+		},
+		"inventory": inventory,
 	})
 }
 

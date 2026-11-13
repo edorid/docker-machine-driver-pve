@@ -43,7 +43,7 @@ spec:
                 clusterId:
                   type: string
                   maxLength: 128
-                  description: Stable administrator-assigned Proxmox cluster identity. Empty until configured.
+                  description: Stable endpoint-derived Proxmox cluster identity.
                 capacityPolicy:
                   type: object
                   required:

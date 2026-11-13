@@ -1,21 +1,21 @@
 # Proxmox placement mode (experimental)
 
-Placement is an opt-in path and is not part of the published `v1.2.0-rc4`
-release. The local implementation is not qualified for production or testing
-until the release gates in [implementation-plan.md](implementation-plan.md) pass.
+Placement is an opt-in experimental path. Pin a tested node-driver release and
+validate it against your Rancher and Proxmox environment before production use.
 
 ## Required setup
 
 - Use a Rancher management cluster and a supported Proxmox cluster. Placement
   uses the management-cluster Kubernetes API; do not put its ledger in the
   downstream cluster being provisioned.
-- Install the chart's placement CRD, ledger, and authorization controller. Set
-  the ledger's administrator-assigned `clusterId` to the exact value supplied
-  to the machine configuration. Do not replace the ledger object while it has
-  active records.
-- Configure `spec.capacityPolicy.configured: true` on the ledger and set the
-  central default CPU and memory reserves (and optional per-host overrides).
-  An unset reserve policy blocks placement.
+- Install the chart's placement CRD and authorization controller. Configure
+  positive shared CPU and memory reserves with
+  `placement.capacityPolicy.default.cpu` and
+  `placement.capacityPolicy.default.memoryBytes`. The first inventory request
+  creates a ledger for the selected Proxmox endpoint using these defaults.
+  Endpoint identity hashes the normalized hostname and port, not the credential
+  or token. Each endpoint therefore has an independent ledger. Do not replace a
+  ledger while it has active records.
 - Give the Proxmox API token sufficient read access to the complete node, VM,
   container, storage, network, template, guest-agent, and cloud-init evidence
   required by discovery, plus permissions to clone, configure, start, stop,
@@ -39,8 +39,8 @@ Enable placement in the Rancher machine configuration and set:
 - **Host-local templates**: comma-separated `host=VMID` entries.
 - **Boot disk size (GiB)**: requested final size. It must be at least the
   configured boot disk size of every eligible mapped template.
-- **Ledger namespace**, **ledger name**, and **Proxmox cluster identity**: must
-  identify the installed ledger.
+- Ledger namespace, name, and cluster identity are derived automatically from
+  the selected Proxmox endpoint and are not machine-pool inputs.
 - Explicit processor sockets, processor cores, and memory are required.
 
 The form's inventory display is advisory. Use the live provisioning-time

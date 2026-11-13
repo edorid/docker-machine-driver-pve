@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/edorid/docker-machine-driver-pve/internal/placement"
 )
 
 const (
@@ -371,6 +373,69 @@ func (c *kubeClient) getLedger(ctx context.Context, ref LedgerRef) error {
 	if json.Unmarshal(data, &object) != nil || object.APIVersion != "placement.pve.edorid.github.io/v1alpha1" ||
 		object.Kind != "ProxmoxPlacementLedger" || object.Spec.ClusterID != ref.ClusterID {
 		return errors.New("placement ledger identity does not match requested Proxmox cluster")
+	}
+
+	return nil
+}
+
+func (c *kubeClient) ensureEndpointLedger(ctx context.Context, ref LedgerRef) error {
+	if err := c.getLedger(ctx, ref); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+
+	if err := c.createEndpointLedger(ctx, ref); err != nil {
+		return err
+	}
+
+	return c.getLedger(ctx, ref)
+}
+
+func (c *kubeClient) createEndpointLedger(ctx context.Context, ref LedgerRef) error {
+	ledgerNamespace := os.Getenv("PLACEMENT_LEDGER_NAMESPACE")
+	if ledgerNamespace == "" {
+		ledgerNamespace = "fleet-default"
+	}
+	if ref.Namespace != ledgerNamespace {
+		return errors.New("ledger namespace does not match configured placement namespace")
+	}
+
+	name, err := placement.LedgerNameForIdentity(ref.ClusterID)
+	if err != nil || ref.Name != name {
+		return errors.New("ledger name does not match endpoint-derived identity")
+	}
+
+	cpu, err := strconv.ParseInt(os.Getenv("PLACEMENT_LEDGER_DEFAULT_CPU"), 10, 64)
+	if err != nil || cpu < 1 {
+		return errors.New("placement ledger default CPU reserve is not configured")
+	}
+	memoryBytes, err := strconv.ParseInt(os.Getenv("PLACEMENT_LEDGER_DEFAULT_MEMORY_BYTES"), 10, 64)
+	if err != nil || memoryBytes < 1 {
+		return errors.New("placement ledger default memory reserve is not configured")
+	}
+
+	ledger := map[string]any{
+		"apiVersion": "placement.pve.edorid.github.io/v1alpha1",
+		"kind":       "ProxmoxPlacementLedger",
+		"metadata":   map[string]string{"name": ref.Name, "namespace": ref.Namespace},
+		"spec": map[string]any{
+			"version": 1, "clusterId": ref.ClusterID,
+			"capacityPolicy": map[string]any{
+				"configured": true,
+				"default":    map[string]int64{"cpu": cpu, "memoryBytes": memoryBytes},
+				"hosts":      map[string]any{},
+			},
+			"groups": map[string]string{}, "records": map[string]any{},
+		},
+	}
+	collection := fmt.Sprintf("%s/namespaces/%s/proxmoxplacementledgers", ledgerAPIPath, ref.Namespace)
+	_, err = c.request(ctx, http.MethodPost, collection, ledger)
+	if errors.Is(err, ErrConflict) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create endpoint placement ledger: %w", err)
 	}
 
 	return nil

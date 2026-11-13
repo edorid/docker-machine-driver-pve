@@ -84,11 +84,10 @@ export default {
         placementHosts: this.value.placementHosts ?? '',
         placementStorages: this.value.placementStorages ?? '',
         placementTemplates: this.value.placementTemplates ?? '',
-        diskSizeGiB: this.value.diskSizeGiB ?? '',
+        diskSizeGiB: this.value.diskSizeGib ?? '',
         placementLedgerNamespace: this.value.placementLedgerNamespace || 'fleet-default',
-        placementLedgerName: this.value.placementLedgerName || 'pve-placement-ledger',
-        placementClusterId: this.value.placementClusterId || (this.credentialId ? `credential-${ this.credentialId.split(/[/:]/).filter(Boolean).pop() }` : ''),
-        placementClusterIdIsAutomatic: !this.value.placementClusterId,
+        placementLedgerName: this.value.placementLedgerName ?? '',
+        placementClusterId: this.value.placementClusterId ?? '',
         placementGuestReady: this.value.placementGuestReady ?? false,
         rancherClusterName: this.value.rancherClusterName ?? '',
         rancherMachinePool: this.value.rancherMachinePool ?? '',
@@ -110,11 +109,6 @@ export default {
   },
   watch: {
     async credentialId(){
-      if(this.placementClusterIdIsAutomatic) {
-        const credentialName = (this.credentialId || '').split(/[/:]/).filter(Boolean).pop();
-
-        this.currentValue.placementClusterId = credentialName ? `credential-${ credentialName }` : '';
-      }
       if(this.currentValue.placementEnabled) {
         await this.fetchPlacementInventory();
       } else {
@@ -329,7 +323,7 @@ export default {
       this.value.placementHosts = this.currentValue.placementEnabled ? this.currentValue.placementHosts.trim() : '';
       this.value.placementStorages = this.currentValue.placementEnabled ? this.currentValue.placementStorages.trim() : '';
       this.value.placementTemplates = this.currentValue.placementEnabled ? this.currentValue.placementTemplates.trim() : '';
-      this.value.diskSizeGiB = this.currentValue.placementEnabled ? this.currentValue.diskSizeGiB.toString() : '';
+      this.value.diskSizeGib = this.currentValue.placementEnabled ? this.currentValue.diskSizeGiB.toString() : '';
       this.value.placementLedgerNamespace = this.currentValue.placementEnabled ? this.currentValue.placementLedgerNamespace.trim() : '';
       this.value.placementLedgerName = this.currentValue.placementEnabled ? this.currentValue.placementLedgerName.trim() : '';
       this.value.placementClusterId = this.currentValue.placementEnabled ? this.currentValue.placementClusterId.trim() : '';
@@ -486,6 +480,8 @@ export default {
       this.placementInventoryBlockedHost = '';
       this.placementInventory = null;
       this.placementInventoryInsecureTLS = false;
+      this.currentValue.placementClusterId = '';
+      this.currentValue.placementLedgerName = '';
       this.resourcePools = null;
       if(!this.credentialId) {
         this.placementInventoryError = 'Select a Proxmox cloud credential to discover inventory.';
@@ -513,6 +509,9 @@ export default {
         this.placementInventory = inventoryResponse.inventory.nodes;
         this.placementInventoryInsecureTLS = inventoryResponse.insecureTLS === true;
         this.resourcePools = inventoryResponse.inventory.resourcePools || [];
+        this.currentValue.placementClusterId = inventoryResponse.placement?.clusterId || '';
+        this.currentValue.placementLedgerName = inventoryResponse.placement?.ledgerName || '';
+        this.currentValue.placementLedgerNamespace = inventoryResponse.placement?.ledgerNamespace || 'fleet-default';
       } catch(error) {
         if(requestId === this.placementInventoryRequestId) {
           const status = error?._status ?? error?.status ?? error?.response?.status;
@@ -824,7 +823,7 @@ export default {
       <t k="cluster.machineConfig.pve.hardware.header" />
     </h3>
     <div class="row mb-20">
-      <div class="col" :class="currentValue.placementEnabled ? 'span-3' : 'span-6'">
+      <div class="col span-6">
         <!-- Processor cores -->
         <UnitInput
           type="number"
@@ -837,7 +836,7 @@ export default {
           step="1"
         />
       </div>
-      <div class="col" :class="currentValue.placementEnabled ? 'span-3' : 'span-6'">
+      <div class="col span-6">
         <!-- Memory -->
         <div class="memory-ballooning-control">
           <UnitInput
@@ -969,12 +968,7 @@ export default {
         </section>
         <details class="placement-section">
         <summary>Advanced placement coordination</summary>
-        <p class="text-muted">The defaults are suitable for most setups. Change these only when using a custom ledger or coordinating more than one Proxmox cluster.</p>
-        <div class="row mb-10">
-          <div class="col span-4"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.placementLedgerNamespace" label="Ledger namespace" required /></div>
-          <div class="col span-4"><LabeledInput type="text" :mode="mode" v-model:value="currentValue.placementLedgerName" label="Ledger name" required /></div>
-          <div class="col span-4"><LabeledInput type="text" :mode="mode" :value="currentValue.placementClusterId" @change="e => { currentValue.placementClusterId = e.target.value; placementClusterIdIsAutomatic = false; }" label="Proxmox cluster identity" required /></div>
-        </div>
+        <p class="text-muted">Placement coordination is automatically scoped to the selected Proxmox API endpoint. Each distinct endpoint uses its own ledger; credential token rotation does not change its identity.</p>
         </details>
         <details v-if="placementInventory" class="placement-inventory placement-section">
           <summary>Show discovered inventory details</summary>
@@ -1065,8 +1059,8 @@ export default {
 .placement-inventory summary { cursor: pointer; font-weight: 600; }
 .placement-inventory ul { margin: 12px 0 0; padding-left: 20px; }
 .placement-inventory li { margin-bottom: 8px; overflow-wrap: anywhere; }
-.memory-ballooning-control { display: flex; align-items: center; gap: 12px; }
-.memory-ballooning-control > :first-child { flex: 1; min-width: 0; }
+.memory-ballooning-control { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.memory-ballooning-control > :first-child { flex: 1 1 240px; min-width: 0; }
 .placement-choice-list {
   display: flex;
   flex-direction: column;
