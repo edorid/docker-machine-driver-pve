@@ -89,36 +89,10 @@ management-cluster ledger and requires compatible host-local templates and a
 configured capacity policy. See the [installation and cluster creation
 guide](docs/installing-and-creating-clusters.md) before enabling it.
 
-#### Custom cloud-init network configuration
-
-Placement mode can attach an existing Proxmox cloud-init network snippet with
-`--pve-cloud-init-network-snippet=local-vm1:snippets/dhcp-network.yaml` (or the
-machine-pool UI field). The driver verifies that the snippet is listed on the
-selected host before starting the VM. It does not create or delete the snippet.
-Proxmox local storage is node-local even when it has the same name on multiple
-hosts: copy the same file to every eligible host and to any migration target.
-The Proxmox token needs access to inspect the storage contents. The snippet
-replaces **all** Proxmox-generated cloud-init network configuration, so the
-operator must verify guest interface names, VLANs, and all required interfaces.
-An existing different custom network configuration is not overwritten.
-
-For example, for a Rocky Linux template whose guest interface is named `eth0`,
-the following network config requests IPv4 via DHCP without injecting static
-DNS servers or search domains:
-
-```yaml
-version: 1
-config:
-  - type: physical
-    name: eth0
-    subnets:
-      - type: dhcp4
-```
-
-Place this file in the storage's `snippets` directory on each node, and confirm
-the guest's network manager accepts DHCP DNS and search domains. This setting
-applies to newly provisioned VMs, not VMs that have already booted. The driver
-does not inspect the file contents or verify DNS reachability.
+Placement generates the Cloud-Init network configuration itself and requests
+DHCP on the selected VM interface. It does not set DNS servers or search
+domains, allowing the guest to use DNS and domain/search information supplied
+by DHCP. Custom network snippets are not supported.
 
 ### Existing driver options
 

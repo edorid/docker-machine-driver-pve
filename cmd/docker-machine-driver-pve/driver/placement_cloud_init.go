@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -79,59 +78,6 @@ func placementDescription(description, identity string) (string, error) {
 		base += "\n"
 	}
 	return base + placementIdentityMarker + identity, nil
-}
-
-var networkSnippetPattern = regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9_.-]*):snippets/([A-Za-z0-9][A-Za-z0-9_.-]*\.(?:yaml|yml))$`)
-
-func validateNetworkSnippet(volume string) (string, error) {
-	matches := networkSnippetPattern.FindStringSubmatch(volume)
-	if matches == nil {
-		return "", errors.New("cloud-init network snippet must be a storage:snippets/filename.yaml volume")
-	}
-	return matches[1], nil
-}
-
-func networkSnippetCustom(existing, volume string) (string, error) {
-	parts := make([]string, 0, 4)
-	for _, item := range strings.Split(existing, ",") {
-		item = strings.TrimSpace(item)
-		if item == "" {
-			continue
-		}
-		key, value, ok := strings.Cut(item, "=")
-		if !ok || value == "" || (key != "user" && key != "meta" && key != "vendor" && key != "network") {
-			return "", errors.New("invalid existing cloud-init custom configuration")
-		}
-		if key == "network" {
-			if value != volume {
-				return "", errors.New("template has a different custom cloud-init network; refusing to overwrite it")
-			}
-			continue
-		}
-		parts = append(parts, item)
-	}
-	return strings.Join(append(parts, "network="+volume), ","), nil
-}
-
-func (d *Driver) verifyNetworkSnippet(ctx context.Context, node, volume string) error {
-	storage, err := validateNetworkSnippet(volume)
-	if err != nil {
-		return err
-	}
-	var contents []struct {
-		VolID   string `json:"volid"`
-		Content string `json:"content"`
-	}
-	path := fmt.Sprintf("/nodes/%s/storage/%s/content", url.PathEscape(node), url.PathEscape(storage))
-	if err := d.getPVEClient().Get(ctx, path, &contents); err != nil {
-		return fmt.Errorf("read cloud-init snippet storage on selected node: %w", err)
-	}
-	for _, item := range contents {
-		if item.VolID == volume && item.Content == "snippets" {
-			return nil
-		}
-	}
-	return fmt.Errorf("cloud-init network snippet %q is not available on node %q", volume, node)
 }
 
 //nolint:contextcheck // The driver SSH wait uses its own bounded timeout; other operations use ctx.
@@ -328,16 +274,6 @@ func (d *Driver) setupNativeCloudInit(ctx context.Context) error {
 		}
 		if err := requireDynamicCloudInitAddress(machine.VirtualMachineConfig, d.NetworkInterfaceName, interfaceNumber); err != nil {
 			return nil, err
-		}
-		if d.CloudInitNetworkSnippet != "" {
-			custom, err := networkSnippetCustom(machine.VirtualMachineConfig.CICustom, d.CloudInitNetworkSnippet)
-			if err != nil {
-				return nil, err
-			}
-			if err := d.verifyNetworkSnippet(ctx, machine.Node, d.CloudInitNetworkSnippet); err != nil {
-				return nil, err
-			}
-			options = append(options, proxmox.VirtualMachineOption{Name: "cicustom", Value: custom})
 		}
 		return machine.Config(ctx, options...)
 	})

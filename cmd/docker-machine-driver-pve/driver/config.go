@@ -39,7 +39,6 @@ const (
 	flagRancherCluster      = "pve-rancher-cluster-name"
 	flagRancherPool         = "pve-rancher-machine-pool"
 	flagPlacementGuestReady = "pve-placement-guest-ready"
-	flagCloudInitNetwork    = "pve-cloud-init-network-snippet"
 )
 
 // Default values for flags.
@@ -106,7 +105,6 @@ type config struct {
 	RancherClusterName       string
 	RancherMachinePool       string
 	PlacementGuestReady      bool
-	CloudInitNetworkSnippet  string
 }
 
 // GetCreateFlags implements drivers.Driver.
@@ -203,7 +201,6 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 		mcnflag.StringFlag{Name: flagRancherCluster, EnvVar: flagEnvVarFromFlagName(flagRancherCluster), Usage: "Optional Rancher cluster name to add to VM tags"},
 		mcnflag.StringFlag{Name: flagRancherPool, EnvVar: flagEnvVarFromFlagName(flagRancherPool), Usage: "Optional Rancher machine-pool name to add to VM tags"},
 		mcnflag.BoolFlag{Name: flagPlacementGuestReady, EnvVar: flagEnvVarFromFlagName(flagPlacementGuestReady), Usage: "Operator confirms the selected guest templates support SSH and passwordless sudo"},
-		mcnflag.StringFlag{Name: flagCloudInitNetwork, EnvVar: flagEnvVarFromFlagName(flagCloudInitNetwork), Usage: "Existing Proxmox cloud-init network snippet volume (placement mode only)"},
 	}
 }
 
@@ -302,12 +299,6 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 
 	d.Tags = strings.Split(opts.String(flagTags), ",")
 	d.PlacementGuestReady = opts.Bool(flagPlacementGuestReady)
-	d.CloudInitNetworkSnippet = strings.TrimSpace(opts.String(flagCloudInitNetwork))
-	if d.CloudInitNetworkSnippet != "" {
-		if _, err := validateNetworkSnippet(d.CloudInitNetworkSnippet); err != nil {
-			return err
-		}
-	}
 	d.RancherClusterName = strings.TrimSpace(opts.String(flagRancherCluster))
 	d.RancherMachinePool = strings.TrimSpace(opts.String(flagRancherPool))
 	if err := d.setPlacementConfig(opts); err != nil {
@@ -315,9 +306,6 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	}
 	//nolint:wsl // Legacy-only required flags are validated together after placement parsing.
 	if d.PlacementGroup == "" {
-		if d.CloudInitNetworkSnippet != "" {
-			return fmt.Errorf("flag '--%s' requires placement mode", flagCloudInitNetwork)
-		}
 		if d.TemplateID <= 0 {
 			return fmt.Errorf("flag '--%s' is required and must be >= 100", flagTemplateID)
 		}
