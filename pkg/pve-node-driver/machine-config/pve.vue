@@ -89,6 +89,7 @@ export default {
         placementLedgerName: this.value.placementLedgerName ?? '',
         placementClusterId: this.value.placementClusterId ?? '',
         placementGuestReady: this.value.placementGuestReady ?? false,
+        cloudInitNetworkSnippet: this.value.cloudInitNetworkSnippet ?? '',
         rancherClusterName: this.value.rancherClusterName ?? '',
         rancherMachinePool: this.value.rancherMachinePool ?? '',
       },
@@ -328,6 +329,7 @@ export default {
       this.value.placementLedgerName = this.currentValue.placementEnabled ? this.currentValue.placementLedgerName.trim() : '';
       this.value.placementClusterId = this.currentValue.placementEnabled ? this.currentValue.placementClusterId.trim() : '';
       this.value.placementGuestReady = this.currentValue.placementEnabled ? this.currentValue.placementGuestReady : false;
+      this.value.cloudInitNetworkSnippet = this.currentValue.placementEnabled ? this.currentValue.cloudInitNetworkSnippet.trim() : '';
       this.value.rancherClusterName = this.currentValue.rancherClusterName.trim();
       this.value.rancherMachinePool = this.currentValue.rancherMachinePool.trim();
 
@@ -959,6 +961,13 @@ export default {
         </section>
         <section class="placement-section">
         <h4>Guest readiness</h4>
+        <div class="row mb-10">
+          <div class="col span-12">
+            <label :for="`cloud-init-network-${uuid}`">Custom cloud-init network snippet (optional)</label>
+            <input :id="`cloud-init-network-${uuid}`" v-model="currentValue.cloudInitNetworkSnippet" class="form-control" :disabled="disabled" placeholder="local-vm1:snippets/dhcp-network.yaml" />
+            <p class="text-muted">Provide an existing snippet on every selected host. It replaces Proxmox-generated network configuration; verify its interfaces and DHCP DNS settings match the template.</p>
+          </div>
+        </div>
         <div class="row mb-10">
           <div class="col span-12">
             <Checkbox v-model:value="currentValue.placementGuestReady" label="I verified every selected guest template supports SSH and passwordless sudo for the configured user." />
