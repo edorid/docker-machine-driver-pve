@@ -66,6 +66,41 @@ func TestInventoryAPIEndpointDiscoveryHasOnlyReadVerb(t *testing.T) {
 	require.Equal(t, []string{"get"}, resources.Resources[0].Verbs)
 }
 
+func TestAggregatorLegacyDiscoveryWithoutGroups(t *testing.T) {
+	request := trustedInventoryRequest(http.MethodGet, inventoryAPIBase)
+	request.Header.Set("X-Remote-User", "system:kube-aggregator")
+	request.Header.Del("X-Remote-Group")
+	response := httptest.NewRecorder()
+	(inventoryAPI{}).ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code)
+	var resources struct {
+		GroupVersion string `json:"groupVersion"`
+	}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &resources))
+	require.Equal(t, inventoryAPIGroup+"/"+inventoryAPIVersion, resources.GroupVersion)
+}
+
+func TestGrouplessAggregatorCannotAccessInventoryOrBypassTLS(t *testing.T) {
+	api := inventoryAPI{}
+	for _, path := range []string{inventoryAPIBase, inventoryAPIBase + "/namespaces/cattle-global-data/proxmoxinventories/cc-example"} {
+		request := trustedInventoryRequest(http.MethodGet, path)
+		request.Header.Set("X-Remote-User", "system:kube-aggregator")
+		request.Header.Del("X-Remote-Group")
+		if path == inventoryAPIBase {
+			request.TLS = nil
+		}
+		response := httptest.NewRecorder()
+		api.ServeHTTP(response, request)
+		require.Equal(t, http.StatusUnauthorized, response.Code)
+	}
+	request := trustedInventoryRequest(http.MethodGet, inventoryAPIBase)
+	request.Header.Set("X-Remote-User", "other-user")
+	request.Header.Del("X-Remote-Group")
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, request)
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+}
+
 func TestInferTemplateNetworkPrefersNet0AndRequiresDHCPAndHostBridge(t *testing.T) {
 	network, bridge, dynamic := inferTemplateNetwork(
 		map[string]string{"net0": "virtio,bridge=vmbr0", "net1": "virtio,bridge=vmbr1"},

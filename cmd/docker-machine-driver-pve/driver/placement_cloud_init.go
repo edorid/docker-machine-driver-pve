@@ -155,7 +155,11 @@ func (d *Driver) resizePlacedBootDisk(ctx context.Context) error {
 	if err != nil || vm.VirtualMachineConfig == nil {
 		return errors.New("read cloned VM disks before resize")
 	}
-	device, existingBytes, err := bootDisk(vm.VirtualMachineConfig)
+	node, err := d.getPVEClient().Node(ctx, d.placementNode)
+	if err != nil {
+		return errors.New("read cloned VM node before resize")
+	}
+	device, existingBytes, err := bootDiskWithResolver(vm.VirtualMachineConfig, storageVolumeSizeResolver(ctx, node))
 	if err != nil {
 		return err
 	}
@@ -256,6 +260,10 @@ func hasCloudInitDisk(config *proxmox.VirtualMachineConfig) bool {
 }
 
 func bootDisk(config *proxmox.VirtualMachineConfig) (string, uint64, error) {
+	return bootDiskWithResolver(config, nil)
+}
+
+func bootDiskWithResolver(config *proxmox.VirtualMachineConfig, resolve func(string) (uint64, error)) (string, uint64, error) {
 	disks := config.MergeDisks()
 	_, order, found := strings.Cut(config.Boot, "order=")
 	if !found {
@@ -267,7 +275,7 @@ func bootDisk(config *proxmox.VirtualMachineConfig) (string, uint64, error) {
 		if !exists || strings.Contains(value, "media=cdrom") || strings.Contains(value, "cloudinit") {
 			continue
 		}
-		size, err := parsePVEVolumeSize(value)
+		size, err := volumeSize(value, resolve)
 		if err != nil {
 			return "", 0, err
 		}

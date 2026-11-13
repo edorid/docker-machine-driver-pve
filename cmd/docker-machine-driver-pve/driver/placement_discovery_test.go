@@ -24,6 +24,8 @@ func TestDiscoverPlacementBuildsCompleteSingleNodeSnapshot(t *testing.T) {
 			payload = map[string]any{"memory": map[string]any{"total": 32 << 30, "free": 24 << 30}}
 		case "/api2/json/nodes/pve1/storage":
 			payload = []any{map[string]any{"storage": "local-lvm", "enabled": 1, "active": 1, "content": "images,rootdir", "total": 1000, "avail": 800}}
+		case "/api2/json/nodes/pve1/storage/local-lvm/content":
+			payload = []any{map[string]any{"volid": "local-lvm:vm-900-disk-0", "size": uint64(10) * gibibyte}}
 		case "/api2/json/nodes/pve1/qemu":
 			payload = []any{map[string]any{"vmid": 900, "name": "rocky-template", "status": "stopped", "cpus": 2, "maxmem": 2 << 30, "tags": "template"}}
 		case "/api2/json/nodes/pve1/lxc":
@@ -34,7 +36,7 @@ func TestDiscoverPlacementBuildsCompleteSingleNodeSnapshot(t *testing.T) {
 			payload = map[string]any{"vmid": 900, "name": "rocky-template", "tags": "template"}
 		case "/api2/json/nodes/pve1/qemu/900/config":
 			payload = map[string]any{
-				"template": 1, "agent": "1", "boot": "order=scsi0;net0", "scsi0": "local-lvm:vm-900-disk-0,size=32G",
+				"template": 1, "agent": "1", "boot": "order=scsi0;net0", "scsi0": "local-lvm:vm-900-disk-0",
 				"ide2": "local-lvm:cloudinit", "net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0", "ipconfig0": "ip=dhcp",
 			}
 		default:
@@ -62,8 +64,8 @@ func TestDiscoverPlacementBuildsCompleteSingleNodeSnapshot(t *testing.T) {
 	require.Equal(t, uint64(2<<30), snapshot.Nodes[0].AllocatedMemoryBytes)
 	require.True(t, snapshot.Nodes[0].TemplateReady)
 	require.True(t, snapshot.Nodes[0].NetworkReady)
-	require.Equal(t, uint64(32)*gibibyte+4*mebibyte, snapshot.Nodes[0].TemplateDiskBytes)
-	require.Equal(t, uint64(32)*gibibyte, snapshot.Nodes[0].TemplateBootDiskBytes)
+	require.Equal(t, uint64(10)*gibibyte+4*mebibyte, snapshot.Nodes[0].TemplateDiskBytes)
+	require.Equal(t, uint64(10)*gibibyte, snapshot.Nodes[0].TemplateBootDiskBytes)
 	require.Equal(t, []placement.Storage{{ID: "local-lvm", Ready: true, CloneSupported: true, TotalBytes: 1000, FreeBytes: 800, AllocatedBytes: 200}}, snapshot.Nodes[0].Storages)
 }
 
@@ -93,6 +95,69 @@ func TestTemplateDiskSizesUsesConfiguredBootOrderAndAllDisks(t *testing.T) {
 	config.Boot = ""
 	_, _, err = templateDiskSizes(config)
 	require.ErrorIs(t, err, placement.ErrIncompleteInventory)
+}
+
+func TestMissingVolumeSizeUsesVerifiedStorageContent(t *testing.T) {
+	config := &proxmox.VirtualMachineConfig{
+		Boot: "order=virtio0", VirtIO0: "local-vm1:9001/base-9001-disk-0.qcow2",
+		IDE2: "local-vm1:9001/vm-9001-cloudinit.qcow2,media=cdrom",
+	}
+	resolve := func(volume string) (uint64, error) {
+		require.Equal(t, "local-vm1:9001/base-9001-disk-0.qcow2", volume)
+		return 10 * gibibyte, nil
+	}
+	total, boot, err := templateDiskSizesWithResolver(config, resolve)
+	require.NoError(t, err)
+	require.Equal(t, uint64(10)*gibibyte, boot)
+	require.Equal(t, boot, total)
+	device, size, err := bootDiskWithResolver(config, resolve)
+	require.NoError(t, err)
+	require.Equal(t, "virtio0", device)
+	require.Equal(t, boot, size)
+}
+
+func TestPlacementVolumeSizeLookup(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		content   []map[string]any
+		wantError bool
+	}{
+		{name: "exact match", content: []map[string]any{{"volid": "local-vm1:9001/base-9001-disk-0.qcow2", "size": uint64(10) * gibibyte}}},
+		{name: "missing", content: []map[string]any{{"volid": "local-vm1:other", "size": 123}}, wantError: true},
+		{name: "zero size", content: []map[string]any{{"volid": "local-vm1:9001/base-9001-disk-0.qcow2", "size": 0}}, wantError: true},
+		{name: "duplicate", content: []map[string]any{{"volid": "local-vm1:9001/base-9001-disk-0.qcow2", "size": 10}, {"volid": "local-vm1:9001/base-9001-disk-0.qcow2", "size": 10}}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var data any
+				switch r.URL.Path {
+				case "/api2/json/nodes/pve1/status":
+					data = map[string]any{}
+				case "/api2/json/nodes/pve1/storage":
+					data = []any{map[string]any{"storage": "local-vm1"}}
+				case "/api2/json/nodes/pve1/storage/local-vm1/content":
+					data = tc.content
+				default:
+					t.Errorf("unexpected path: %s", r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"data": data}))
+			}))
+			defer server.Close()
+			d := NewDriver("worker", t.TempDir())
+			d.URL, d.TokenID, d.TokenSecret, d.InsecureTLS = server.URL, "user@pam!test", "test-secret", true
+			node, err := d.getPVEClient().Node(t.Context(), "pve1")
+			require.NoError(t, err)
+			size, err := storageVolumeSizeResolver(t.Context(), node)("local-vm1:9001/base-9001-disk-0.qcow2")
+			if tc.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, uint64(10)*gibibyte, size)
+			}
+		})
+	}
 }
 
 func TestParsePVEVolumeSizeValidatesUnitsAndOverflow(t *testing.T) {

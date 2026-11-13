@@ -236,7 +236,7 @@ func (d *Driver) inspectPlacementTemplate(ctx context.Context, node *proxmox.Nod
 		(template.VirtualMachineConfig.Agent != "1" && !strings.Contains(template.VirtualMachineConfig.Agent, "enabled=1")) {
 		return vmid, false, false, 0, 0, nil
 	}
-	diskBytes, bootDiskBytes, err := templateDiskSizes(template.VirtualMachineConfig)
+	diskBytes, bootDiskBytes, err := templateDiskSizesWithResolver(template.VirtualMachineConfig, storageVolumeSizeResolver(ctx, node))
 	if err != nil {
 		return vmid, false, false, 0, 0, fmt.Errorf("read template disk evidence: %w", err)
 	}
@@ -312,6 +312,10 @@ func vmStorageLocation(config *proxmox.VirtualMachineConfig) (string, error) {
 
 //nolint:wsl // Disk sizes are accumulated before validating configured boot order.
 func templateDiskSizes(config *proxmox.VirtualMachineConfig) (uint64, uint64, error) {
+	return templateDiskSizesWithResolver(config, nil)
+}
+
+func templateDiskSizesWithResolver(config *proxmox.VirtualMachineConfig, resolve func(string) (uint64, error)) (uint64, uint64, error) {
 	devices := config.MergeDisks()
 	if config.EFIDisk0 != "" {
 		devices["efidisk0"] = config.EFIDisk0
@@ -332,7 +336,7 @@ func templateDiskSizes(config *proxmox.VirtualMachineConfig) (uint64, uint64, er
 			total += cloudInitAuxiliaryBytes
 			continue
 		}
-		size, err := parsePVEVolumeSize(value)
+		size, err := volumeSize(value, resolve)
 		if err != nil || ^uint64(0)-total < size {
 			return 0, 0, placement.ErrIncompleteInventory
 		}
@@ -355,6 +359,64 @@ func templateDiskSizes(config *proxmox.VirtualMachineConfig) (uint64, uint64, er
 		return 0, 0, placement.ErrIncompleteInventory
 	}
 	return total, bootDisk, nil
+}
+
+// volumeSize only consults storage for an omitted size, not an invalid size.
+func volumeSize(value string, resolve func(string) (uint64, error)) (uint64, error) {
+	for _, option := range strings.Split(value, ",")[1:] {
+		if strings.HasPrefix(option, "size=") {
+			return parsePVEVolumeSize(value)
+		}
+	}
+	volume, _, _ := strings.Cut(value, ",")
+	if resolve == nil || volume == "" {
+		return 0, errors.New("proxmox volume size is unavailable")
+	}
+	return resolve(volume)
+}
+
+// storageVolumeSizeResolver requires one exact, nonzero volume match on the VM's node.
+func storageVolumeSizeResolver(ctx context.Context, node *proxmox.Node) func(string) (uint64, error) {
+	return func(volume string) (uint64, error) {
+		storageID, name, found := strings.Cut(volume, ":")
+		if !found || storageID == "" || name == "" {
+			return 0, errors.New("proxmox volume identifier is invalid")
+		}
+		storages, err := node.Storages(ctx)
+		if err != nil {
+			return 0, errors.New("proxmox storage inventory is unavailable")
+		}
+		var selected *proxmox.Storage
+		for _, storage := range storages {
+			if storage != nil && storage.Name == storageID {
+				if selected != nil {
+					return 0, errors.New("proxmox storage identity is ambiguous")
+				}
+				selected = storage
+			}
+		}
+		if selected == nil {
+			return 0, errors.New("proxmox volume storage is unavailable")
+		}
+		contents, err := selected.GetContent(ctx)
+		if err != nil {
+			return 0, errors.New("proxmox storage content is unavailable")
+		}
+		var size uint64
+		foundVolume := false
+		for _, content := range contents {
+			if content != nil && content.Volid == volume {
+				if foundVolume || content.Size == 0 {
+					return 0, errors.New("proxmox volume size is ambiguous or invalid")
+				}
+				foundVolume, size = true, content.Size
+			}
+		}
+		if !foundVolume {
+			return 0, errors.New("proxmox volume is unavailable in storage content")
+		}
+		return size, nil
+	}
 }
 
 //nolint:wsl // Parse each size option and its unit as one validation branch.

@@ -40,7 +40,11 @@ func (api inventoryAPI) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		http.Error(writer, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
-	if _, err := identityFromAggregatedRequest(request); err != nil {
+	_, identityErr := identityFromAggregatedRequest(request)
+	legacyAggregatorDiscovery := request.URL.Path == inventoryAPIBase &&
+		request.Header.Get("X-Remote-User") == "system:kube-aggregator" &&
+		request.TLS != nil && len(request.TLS.VerifiedChains) > 0 && len(request.TLS.PeerCertificates) > 0
+	if identityErr != nil && !legacyAggregatorDiscovery {
 		http.Error(writer, `{"error":"authenticated request required"}`, http.StatusUnauthorized)
 		return
 	}
