@@ -12,6 +12,7 @@ spec:
   clusterId: {{ .Values.placement.initialClusterID | quote }}
   capacityPolicy:
     configured: false
+    cpuOvercommitRatio: {{ .Values.placement.capacityPolicy.cpuOvercommitRatio }}
     default:
       cpu: 0
       memoryBytes: 0

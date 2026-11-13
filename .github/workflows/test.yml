@@ -46,7 +46,13 @@ jobs:
           helm template pve-node-driver ./deploy/charts/pve-node-driver --namespace fleet-default --include-crds > rendered-chart.yaml
           grep -A 1 'name: PLACEMENT_LEDGER_DEFAULT_CPU' rendered-chart.yaml | grep -q 'value: "1"'
           grep -A 1 'name: PLACEMENT_LEDGER_DEFAULT_MEMORY_BYTES' rendered-chart.yaml | grep -q 'value: "1073741824"'
+          grep -A 1 'name: PLACEMENT_LEDGER_CPU_OVERCOMMIT_RATIO' rendered-chart.yaml | grep -q 'value: "2"'
+          helm template pve-node-driver ./deploy/charts/pve-node-driver --set placement.capacityPolicy.cpuOvercommitRatio=1.5 | grep -A 1 'name: PLACEMENT_LEDGER_CPU_OVERCOMMIT_RATIO' | grep -q 'value: "1.5"'
           if helm template pve-node-driver ./deploy/charts/pve-node-driver --set placement.capacityPolicy.default.cpu=0 > /dev/null 2>&1; then
             echo "Expected zero CPU reserve to be rejected" >&2
+            exit 1
+          fi
+          if helm template pve-node-driver ./deploy/charts/pve-node-driver --set placement.capacityPolicy.cpuOvercommitRatio=0.5 > /dev/null 2>&1; then
+            echo "Expected CPU overcommit ratios below 1.0 to be rejected" >&2
             exit 1
           fi

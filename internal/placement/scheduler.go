@@ -42,14 +42,18 @@ type CapacityReserve struct {
 // CapacityPolicy is centrally configured once per Proxmox cluster. Configured
 // distinguishes an intentional zero reserve from the installed unset policy.
 type CapacityPolicy struct {
-	Configured bool                       `json:"configured"`
-	Default    CapacityReserve            `json:"default"`
-	Hosts      map[string]CapacityReserve `json:"hosts"`
+	Configured         bool                       `json:"configured"`
+	CPUOvercommitRatio float64                    `json:"cpuOvercommitRatio,omitempty"`
+	Default            CapacityReserve            `json:"default"`
+	Hosts              map[string]CapacityReserve `json:"hosts"`
 }
 
 func (p CapacityPolicy) Validate() error {
 	if !p.Configured {
 		return errors.New("host capacity reserve policy is not configured")
+	}
+	if p.CPUOvercommitRatio < 0 || math.IsNaN(p.CPUOvercommitRatio) || math.IsInf(p.CPUOvercommitRatio, 0) || (p.CPUOvercommitRatio > 0 && p.CPUOvercommitRatio < 1) {
+		return errors.New("CPU overcommit ratio must be finite and at least 1")
 	}
 
 	for host := range p.Hosts {
@@ -200,7 +204,7 @@ func Select(ctx context.Context, policy Policy, request Resources, inventory Sna
 			pending = &hostUsage{disks: make(map[string]uint64)}
 		}
 
-		if reason := hostExclusion(node, found, policy.Templates[host], inventory.CapacityPolicy.ForHost(host), request, pending); reason != "" {
+		if reason := hostExclusion(node, found, policy.Templates[host], inventory.CapacityPolicy.ForHost(host), inventory.CapacityPolicy.CPUOvercommitRatio, request, pending); reason != "" {
 			decision.Excluded = append(decision.Excluded, Exclusion{Node: host, Reason: reason})
 			continue
 		}
@@ -228,7 +232,7 @@ func Select(ctx context.Context, policy Policy, request Resources, inventory Sna
 
 			decision.Candidates = append(decision.Candidates, Candidate{
 				Node: host, Storage: storageID, TemplateVMID: node.TemplateVMID, GroupCount: pending.count,
-				RemainingCPU:       remaining(node.CPU, reserve.CPU, node.AllocatedCPU, pending.cpu, request.CPU),
+				RemainingCPU:       remaining(cpuCapacity(node.CPU, reserve.CPU, inventory.CapacityPolicy.CPUOvercommitRatio), node.AllocatedCPU, pending.cpu, request.CPU),
 				RemainingMemory:    remaining(node.MemoryBytes, reserve.MemoryBytes, node.AllocatedMemoryBytes, pending.memory, request.MemoryBytes),
 				RemainingDiskBytes: diskAvailable(storage, pending.disks[storageID]) - request.DiskBytes,
 			})
@@ -281,8 +285,8 @@ func compareCandidates(left, right Candidate) int {
 	return 0
 }
 
-func hostExclusion(node Node, found bool, template int, reserve CapacityReserve, request Resources, pending *hostUsage) string {
-	guestCPUCapacity := remaining(node.CPU, reserve.CPU)
+func hostExclusion(node Node, found bool, template int, reserve CapacityReserve, cpuOvercommitRatio float64, request Resources, pending *hostUsage) string {
+	guestCPUCapacity := cpuCapacity(node.CPU, reserve.CPU, cpuOvercommitRatio)
 	guestMemoryCapacity := remaining(node.MemoryBytes, reserve.MemoryBytes)
 
 	switch {
@@ -304,6 +308,17 @@ func hostExclusion(node Node, found bool, template int, reserve CapacityReserve,
 	}
 
 	return ""
+}
+
+func cpuCapacity(logicalCPUs, reservedCPUs uint64, ratio float64) uint64 {
+	if ratio == 0 {
+		ratio = 1 // Preserve the no-overcommit behavior of ledgers created before this field existed.
+	}
+	capacity := float64(remaining(logicalCPUs, reservedCPUs)) * ratio
+	if capacity >= float64(math.MaxUint64) {
+		return math.MaxUint64
+	}
+	return uint64(math.Floor(capacity))
 }
 
 func diskAvailable(storage Storage, pending uint64) uint64 {

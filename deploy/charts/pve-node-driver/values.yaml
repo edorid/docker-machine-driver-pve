@@ -10,6 +10,7 @@ placement:
   initialLedgerNamespace: fleet-default
   initialClusterID: ""
   capacityPolicy:
+    cpuOvercommitRatio: 2.0
     default:
       cpu: 1
       memoryBytes: 1073741824

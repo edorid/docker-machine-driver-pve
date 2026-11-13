@@ -88,6 +88,8 @@ Safe placement is available in the Rancher machine-pool UI. It uses a
 management-cluster ledger and requires compatible host-local templates and a
 configured capacity policy. See the [installation and cluster creation
 guide](docs/installing-and-creating-clusters.md) before enabling it.
+For the project's design history and provisioning workflows, see the
+[design decisions guide](docs/design-history.md).
 
 Placement generates the Cloud-Init network configuration itself and requests
 DHCP on the selected VM interface. It does not set DNS servers or search

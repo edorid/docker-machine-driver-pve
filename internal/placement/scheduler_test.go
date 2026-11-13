@@ -82,6 +82,16 @@ func TestPolicyValidation(t *testing.T) {
 	require.NotEqual(t, fingerprint, changed)
 }
 
+func TestCapacityPolicyRequiresValidCPUOvercommitRatio(t *testing.T) {
+	for _, ratio := range []float64{-1, 0.5, math.NaN(), math.Inf(1)} {
+		policy := CapacityPolicy{Configured: true, CPUOvercommitRatio: ratio}
+		require.Error(t, policy.Validate())
+	}
+
+	policy := CapacityPolicy{Configured: true, CPUOvercommitRatio: 1.5}
+	require.NoError(t, policy.Validate())
+}
+
 func TestSpreadThenMostAvailableStorage(t *testing.T) {
 	policy, inventory := testPolicy(), testInventory()
 	decision, err := Select(t.Context(), policy, testResources(), inventory, nil)
@@ -121,6 +131,28 @@ func TestSpreadAllowsUpgradeSurgeAndIndependentPools(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, decision.Selected.GroupCount)
 	require.Equal(t, uint64(96), decision.Selected.RemainingCPU) // pending control-plane CPU still counts
+}
+
+func TestCPUOvercommitRatioAllowsFractionalCapacityWithinHostReserve(t *testing.T) {
+	policy, inventory := testPolicy(), testInventory()
+	inventory.CapacityPolicy.Default.CPU = 10
+	inventory.CapacityPolicy.CPUOvercommitRatio = 1.5
+	for index := range inventory.Nodes {
+		inventory.Nodes[index].AllocatedCPU = 133
+	}
+
+	decision, err := Select(t.Context(), policy, testResources(), inventory, nil)
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), decision.Selected.RemainingCPU)
+
+	for index := range inventory.Nodes {
+		inventory.Nodes[index].AllocatedCPU = 134
+	}
+	decision, err = Select(t.Context(), policy, testResources(), inventory, nil)
+	require.ErrorIs(t, err, ErrNoEligibleDestination)
+	for _, exclusion := range decision.Excluded {
+		require.Equal(t, "insufficient_cpu", exclusion.Reason)
+	}
 }
 
 func TestEligibilityExclusions(t *testing.T) {

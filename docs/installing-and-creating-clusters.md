@@ -70,9 +70,19 @@ The chart defaults to 1 CPU and 1073741824 bytes (1 GiB) per host. Choose
 reserves appropriate for your Proxmox hosts; override the defaults with
 `--set placement.capacityPolicy.default.cpu=<cpus>` and
 `--set placement.capacityPolicy.default.memoryBytes=<bytes>` as needed. Both
-must be positive. These values seed each new endpoint ledger; changing Helm
-values does not automatically update existing ledger policies. Optional per-host
-overrides can be applied to an individual ledger's `spec.capacityPolicy.hosts`.
+must be positive. CPU overcommit defaults to `2.0`; configure a fractional or
+higher ratio with `--set placement.capacityPolicy.cpuOvercommitRatio=1.5` (the
+ratio must be at least `1.0`). Reserves and ratio seed each new endpoint ledger;
+changing Helm values does not automatically update existing ledger policies.
+For an existing ledger, have an administrator update
+`spec.capacityPolicy.cpuOvercommitRatio` in that endpoint's
+`ProxmoxPlacementLedger` resource after reviewing the impact; do not replace the
+ledger or clear active records. When upgrading an existing installation, apply
+the updated `proxmoxplacementledgers.yaml` CRD from the release chart before
+writing this new field; Helm does not upgrade CRDs stored under a chart's
+`crds/` directory automatically.
+Optional per-host reserve overrides can be applied to an individual ledger's
+`spec.capacityPolicy.hosts`.
 Older chart releases, including `1.2.0-rc22`, require explicit reserve values.
 
 The chart enables `placement.inventoryAPI.enabled` by default. To explicitly

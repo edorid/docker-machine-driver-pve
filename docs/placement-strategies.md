@@ -22,15 +22,21 @@ No automatic migration or rebalance is performed after deletion or recovery.
 6. On that host, prefer greatest remaining allowed storage bytes after the
    request and pending commitments; tie by lexical storage ID.
 
-The pure scheduler implements these rules in `internal/placement`. The driver
-does not yet expose this policy through flags or Rancher UI.
+The scheduler implements these rules in `internal/placement`; placement
+configuration is available in the Rancher machine-pool UI, while the cluster-wide
+CPU overcommit ratio is configured in the Helm chart.
 
 ## Capacity semantics
 
-CPU is allocated vCPU count against physical logical-CPU capacity; no overcommit
-ratio is applied. Memory uses configured maximum allocation, not a reduced
-balloon target, and also checks actual free memory. No spare-capacity assumption
-is derived from low real-time utilization.
+CPU is allocated vCPU count against the host's logical-CPU capacity after its
+reserve, multiplied by the shared CPU overcommit ratio (default `2.0`). For
+example, 48 logical CPUs with a reserve of 2 and a ratio of 1.5 admit up to 69
+allocated vCPUs before pending request capacity is exhausted. Configure the
+ratio with `placement.capacityPolicy.cpuOvercommitRatio`; it must be at least
+`1.0`. Existing allocations and pending reservations still count against this
+limit. Memory uses configured maximum allocation, not a reduced balloon target,
+and also checks actual free memory. No spare-capacity assumption is derived from
+low real-time utilization.
 
 For each `(host, storageID)`, admission uses the smaller of reported physical
 free bytes and total bytes minus existing **full virtual allocations**, then

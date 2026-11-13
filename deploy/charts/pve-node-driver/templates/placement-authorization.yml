@@ -1,6 +1,9 @@
 {{- if and .Values.placement.enabled (or (lt (int .Values.placement.capacityPolicy.default.cpu) 1) (lt (int .Values.placement.capacityPolicy.default.memoryBytes) 1)) }}
 {{- fail "placement.capacityPolicy.default.cpu and memoryBytes must be positive shared host-reserve defaults" }}
 {{- end }}
+{{- if and .Values.placement.enabled (lt (float64 .Values.placement.capacityPolicy.cpuOvercommitRatio) 1.0) }}
+{{- fail "placement.capacityPolicy.cpuOvercommitRatio must be at least 1.0" }}
+{{- end }}
 {{- if .Values.placement.enabled }}
 apiVersion: v1
 kind: ServiceAccount
@@ -267,6 +270,8 @@ spec:
               value: {{ .Values.placement.inventoryAPI.enabled | quote }}
             - name: PLACEMENT_LEDGER_DEFAULT_CPU
               value: {{ .Values.placement.capacityPolicy.default.cpu | quote }}
+            - name: PLACEMENT_LEDGER_CPU_OVERCOMMIT_RATIO
+              value: {{ .Values.placement.capacityPolicy.cpuOvercommitRatio | quote }}
             - name: PLACEMENT_LEDGER_DEFAULT_MEMORY_BYTES
               value: {{ .Values.placement.capacityPolicy.default.memoryBytes | int64 | quote }}
             - name: PLACEMENT_LEDGER_NAMESPACE

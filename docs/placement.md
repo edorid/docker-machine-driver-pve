@@ -21,8 +21,13 @@ validate it against your Rancher and Proxmox environment before production use.
   defaults to a reserve of 1 CPU and 1 GiB per host; adjust these positive
   shared CPU and memory reserves for your environment with
   `placement.capacityPolicy.default.cpu` and
-  `placement.capacityPolicy.default.memoryBytes`. The first inventory request
-  creates a ledger for the selected Proxmox endpoint using these defaults.
+  `placement.capacityPolicy.default.memoryBytes`. CPU admission defaults to a
+  `2.0` overcommit ratio and can be changed with
+  `placement.capacityPolicy.cpuOvercommitRatio` (minimum `1.0`). The first
+  inventory request creates a ledger for the selected Proxmox endpoint using
+  these policy values. Helm changes do not rewrite existing endpoint ledgers;
+  have an administrator update their capacity policy deliberately, without
+  replacing the ledger or clearing active records.
   Endpoint identity hashes the normalized hostname and port, not the credential
   or token. Each endpoint therefore has an independent ledger. Do not replace a
   ledger while it has active records.

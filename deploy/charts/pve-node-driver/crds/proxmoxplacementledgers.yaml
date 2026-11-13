@@ -53,6 +53,10 @@ spec:
                   properties:
                     configured:
                       type: boolean
+                    cpuOvercommitRatio:
+                      type: number
+                      format: double
+                      minimum: 1
                     default:
                       type: object
                       required:

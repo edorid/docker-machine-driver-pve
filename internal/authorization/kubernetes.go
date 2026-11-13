@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -414,6 +415,10 @@ func (c *kubeClient) createEndpointLedger(ctx context.Context, ref LedgerRef) er
 	if err != nil || memoryBytes < 1 {
 		return errors.New("placement ledger default memory reserve is not configured")
 	}
+	cpuOvercommitRatio, err := strconv.ParseFloat(os.Getenv("PLACEMENT_LEDGER_CPU_OVERCOMMIT_RATIO"), 64)
+	if err != nil || math.IsNaN(cpuOvercommitRatio) || math.IsInf(cpuOvercommitRatio, 0) || cpuOvercommitRatio < 1 {
+		return errors.New("placement ledger CPU overcommit ratio must be finite and at least 1")
+	}
 
 	ledger := map[string]any{
 		"apiVersion": "placement.pve.edorid.github.io/v1alpha1",
@@ -422,9 +427,10 @@ func (c *kubeClient) createEndpointLedger(ctx context.Context, ref LedgerRef) er
 		"spec": map[string]any{
 			"version": 1, "clusterId": ref.ClusterID,
 			"capacityPolicy": map[string]any{
-				"configured": true,
-				"default":    map[string]int64{"cpu": cpu, "memoryBytes": memoryBytes},
-				"hosts":      map[string]any{},
+				"configured":         true,
+				"cpuOvercommitRatio": cpuOvercommitRatio,
+				"default":            map[string]int64{"cpu": cpu, "memoryBytes": memoryBytes},
+				"hosts":              map[string]any{},
 			},
 			"groups": map[string]string{}, "records": map[string]any{},
 		},

@@ -153,6 +153,7 @@ func TestInventoryAPIRequiresTrustedAggregatorIdentity(t *testing.T) {
 func TestInventoryAPIAuthorizesSecretBeforeDiscovery(t *testing.T) {
 	t.Setenv("PLACEMENT_LEDGER_DEFAULT_CPU", "2")
 	t.Setenv("PLACEMENT_LEDGER_DEFAULT_MEMORY_BYTES", "1073741824")
+	t.Setenv("PLACEMENT_LEDGER_CPU_OVERCOMMIT_RATIO", "1.5")
 	var secretReads, discoveries int
 	ledgerCreated := false
 	clusterID, ledgerName, err := placement.EndpointIdentity("https://proxmox.example:8006")
@@ -172,6 +173,13 @@ func TestInventoryAPIAuthorizesSecretBeforeDiscovery(t *testing.T) {
 			_, _ = writer.Write([]byte(`{"apiVersion":"placement.pve.edorid.github.io/v1alpha1","kind":"ProxmoxPlacementLedger","spec":{"clusterId":"` + clusterID + `"}}`))
 		case "/apis/placement.pve.edorid.github.io/v1alpha1/namespaces/fleet-default/proxmoxplacementledgers":
 			require.Equal(t, http.MethodPost, request.Method)
+			var created struct {
+				Spec struct {
+					CapacityPolicy placement.CapacityPolicy `json:"capacityPolicy"`
+				} `json:"spec"`
+			}
+			require.NoError(t, json.NewDecoder(request.Body).Decode(&created))
+			require.Equal(t, 1.5, created.Spec.CapacityPolicy.CPUOvercommitRatio)
 			ledgerCreated = true
 			writer.WriteHeader(http.StatusCreated)
 		default:
