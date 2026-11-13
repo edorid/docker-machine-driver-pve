@@ -18,6 +18,42 @@ type loseFirstPutResponse struct {
 	lost  bool
 }
 
+func TestReservationPreservesRequiredEmptyHosts(t *testing.T) {
+	var putSeen bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"apiVersion":"placement.pve.edorid.github.io/v1alpha1","kind":"ProxmoxPlacementLedger","metadata":{"uid":"ledger-uid","resourceVersion":"1"},"spec":{"version":1,"clusterId":"proxmox-cluster-a","capacityPolicy":{"configured":true,"default":{"cpu":0,"memoryBytes":0},"hosts":{}},"groups":{},"records":{}}}`))
+			return
+		}
+		putSeen = true
+		var object map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&object); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		policy := object["spec"].(map[string]any)["capacityPolicy"].(map[string]any)
+		if _, ok := policy["hosts"].(map[string]any); !ok {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+		object["metadata"].(map[string]any)["resourceVersion"] = "2"
+		_ = json.NewEncoder(w).Encode(object)
+	}))
+	defer server.Close()
+	store, err := NewKubernetesStore(server.URL+"/ledger", "ledger-uid", server.Client(), nil)
+	require.NoError(t, err)
+	coordinator := Coordinator{Store: store, ClusterID: "proxmox-cluster-a"}
+	_, _, err = coordinator.Reserve(t.Context(), testIntent(1), discoverTestInventory)
+	require.True(t, putSeen)
+	require.NoError(t, err)
+}
+
+func TestLedgerRejectsMissingHostOverridesMap(t *testing.T) {
+	ledger := emptyLedger()
+	ledger.CapacityPolicy.Hosts = nil
+	require.ErrorIs(t, ledger.Validate(), ErrLedgerUnavailable)
+}
+
 func (transport *loseFirstPutResponse) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := transport.base.RoundTrip(request)
 	if err != nil {

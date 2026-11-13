@@ -43,7 +43,7 @@ type CapacityReserve struct {
 type CapacityPolicy struct {
 	Configured bool                       `json:"configured"`
 	Default    CapacityReserve            `json:"default"`
-	Hosts      map[string]CapacityReserve `json:"hosts,omitempty"`
+	Hosts      map[string]CapacityReserve `json:"hosts"`
 }
 
 func (p CapacityPolicy) Validate() error {

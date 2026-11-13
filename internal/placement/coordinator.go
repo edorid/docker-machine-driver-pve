@@ -359,7 +359,7 @@ func (c Coordinator) change(ctx context.Context, machineID, ownerID string, upda
 //
 //nolint:gocyclo,cyclop,gocognit // Explicit validation of durable records fails closed at the ledger boundary.
 func (l Ledger) Validate() error {
-	if l.Version != 1 || !validIdentity(l.ClusterID) || l.Groups == nil || l.Records == nil {
+	if l.Version != 1 || !validIdentity(l.ClusterID) || l.Groups == nil || l.Records == nil || l.CapacityPolicy.Hosts == nil {
 		return ErrLedgerUnavailable
 	}
 
