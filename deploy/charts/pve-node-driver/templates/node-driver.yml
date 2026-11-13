@@ -20,4 +20,4 @@ spec:
   active: true
   addCloudCredential: true
   builtin: false
-  whitelistDomains: {{ toYaml (.Values.nodeDriver.whitelistDomains | default list) | nindent 4 | trim }}
+  whitelistDomains:{{ toYaml (.Values.nodeDriver.whitelistDomains | default list) | nindent 4 }}
