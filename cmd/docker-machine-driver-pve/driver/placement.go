@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/edorid/docker-machine-driver-pve/internal/placement"
 	"github.com/luthermonson/go-proxmox"
@@ -238,7 +239,11 @@ func (d *Driver) createPlacedVirtualMachine(ctx context.Context) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		record, err = coordinator.RecordTask(ctx, intent.MachineID, intent.OwnerID, record.SubmissionToken, task.ID)
+		taskID, err := cloneTaskIdentity(task, record.Node)
+		if err != nil {
+			return 0, err
+		}
+		record, err = coordinator.RecordTask(ctx, intent.MachineID, intent.OwnerID, record.SubmissionToken, taskID)
 		if err != nil {
 			return 0, fmt.Errorf("persist clone task identity; do not resubmit: %w", err)
 		}
@@ -249,7 +254,10 @@ func (d *Driver) createPlacedVirtualMachine(ctx context.Context) (int, error) {
 	if record.Phase != placement.Submitted || record.TaskID == "" {
 		return 0, placement.ErrUncertainOperation
 	}
-	task := proxmox.NewTask(proxmox.UPID(record.TaskID), d.getPVEClient())
+	task, err := recordedCloneTask(record.TaskID, record.Node, d.getPVEClient())
+	if err != nil {
+		return 0, err
+	}
 	if err := d.waitForPVETaskToSucceed(ctx, task); err != nil {
 		return 0, fmt.Errorf("wait for recorded clone task: %w", err)
 	}
@@ -331,7 +339,10 @@ func (d *Driver) removePlaced(ctx context.Context) error {
 		return placement.ErrIdentityConflict
 	}
 	if (record.Phase == placement.Submitted || record.Phase == placement.Removing) && record.TaskID != "" {
-		task := proxmox.NewTask(proxmox.UPID(record.TaskID), d.getPVEClient())
+		task, err := recordedCloneTask(record.TaskID, record.Node, d.getPVEClient())
+		if err != nil {
+			return err
+		}
 		waitErr := task.Wait(ctx, pveTaskPollingInterval, pveTaskPollingTimeout)
 		if waitErr != nil && !task.IsCompleted {
 			return fmt.Errorf("clone task is not terminal; retain removal reservation: %w", waitErr)
@@ -389,6 +400,26 @@ func (d *Driver) removePlaced(ctx context.Context) error {
 		return fmt.Errorf("release placement reservation after verified deletion: %w", err)
 	}
 	return nil
+}
+
+// A task's ID is its resource identifier, not its unique Proxmox UPID.
+func cloneTaskIdentity(task *proxmox.Task, node string) (string, error) {
+	if task == nil {
+		return "", fmt.Errorf("clone task identity is missing; operator recovery required: %w", placement.ErrUncertainOperation)
+	}
+	if _, err := recordedCloneTask(string(task.UPID), node, nil); err != nil {
+		return "", err
+	}
+	return string(task.UPID), nil
+}
+
+func recordedCloneTask(id, node string, client *proxmox.Client) (*proxmox.Task, error) {
+	parts := strings.Split(id, ":")
+	if len(parts) != 9 || parts[0] != "UPID" || parts[1] != node || node == "" ||
+		parts[2] == "" || parts[3] == "" || parts[4] == "" || parts[5] != "qmclone" || parts[6] == "" || parts[7] == "" || parts[8] != "" {
+		return nil, fmt.Errorf("recorded clone task identity is invalid; operator recovery required: %w", placement.ErrUncertainOperation)
+	}
+	return proxmox.NewTask(proxmox.UPID(id), client), nil
 }
 
 //nolint:gocognit,gocyclo,cyclop,wsl // Complete cluster scan proves absence before releasing capacity.
