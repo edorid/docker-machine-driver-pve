@@ -2,12 +2,10 @@
 package driver
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -85,19 +83,20 @@ func (d *Driver) initializePlaced(ctx context.Context) error {
 	if d.PVEMachineID == nil || d.placementNode == "" {
 		return errors.New("placed machine identity is unavailable")
 	}
+	if d.placementIncarnationID == "" {
+		return errors.New("placed machine incarnation identity is unavailable")
+	}
 
 	vm, err := d.getPVEVirtualMachineOnNode(ctx, *d.PVEMachineID, d.placementNode)
 
 	if err != nil || vm.VirtualMachineConfig == nil || vm.Name != d.MachineName {
 		return errors.New("cloned Proxmox machine identity could not be verified")
 	}
-	if d.placementIncarnationID != "" {
-		if err := d.discoverRancherMachineNames(ctx); err != nil {
-			return fmt.Errorf("revalidate Rancher machine metadata: %w", err)
-		}
-		if err := validateRancherMachineTags(d.RancherClusterName, d.RancherMachinePool); err != nil {
-			return err
-		}
+	if err := d.discoverRancherMachineNames(ctx); err != nil {
+		return fmt.Errorf("revalidate Rancher machine metadata: %w", err)
+	}
+	if err := validateRancherMachineTags(d.RancherClusterName, d.RancherMachinePool); err != nil {
+		return err
 	}
 
 	d.Tags = d.managedMachineTags(vm.Tags)
@@ -107,9 +106,7 @@ func (d *Driver) initializePlaced(ctx context.Context) error {
 	}
 
 	options := []proxmox.VirtualMachineOption{{Name: "tags", Value: d.Tags}}
-	if d.placementIncarnationID != "" {
-		options = append(options, proxmox.VirtualMachineOption{Name: "description", Value: description})
-	}
+	options = append(options, proxmox.VirtualMachineOption{Name: "description", Value: description})
 	task, err := vm.Config(ctx, options...)
 	if err != nil {
 		return fmt.Errorf("tag placed VM: %w", err)
@@ -127,12 +124,7 @@ func (d *Driver) initializePlaced(ctx context.Context) error {
 		return err
 	}
 
-	if d.placementIncarnationID != "" {
-		if err := d.setupGeneratedPlacementISO(ctx, vm); err != nil {
-			return err
-		}
-	} else if err := d.setupNativeCloudInit(ctx); err != nil {
-		// Existing placement reservations and VMs retain the old native-drive path.
+	if err := d.setupGeneratedPlacementISO(ctx, vm); err != nil {
 		return err
 	}
 
@@ -264,38 +256,6 @@ func placementMetadata(existing, machineName, incarnationID string) (string, err
 	return string(encoded), nil
 }
 
-func (d *Driver) setupNativeCloudInit(ctx context.Context) error {
-	publicKey, err := os.ReadFile(d.GetSSHPublicKeyPath())
-	if err != nil {
-		return fmt.Errorf("read placement SSH public key: %w", err)
-	}
-	publicKey = bytes.TrimSpace(publicKey)
-	if len(publicKey) == 0 || bytes.ContainsAny(publicKey, "\r\n") {
-		return errors.New("placement SSH public key is empty or malformed")
-	}
-	sshKeys := string(publicKey)
-	if d.SharedSSHPublicKey != "" {
-		sshKeys += "\n" + d.SharedSSHPublicKey
-	}
-	interfaceNumber, err := networkInterfaceNumber(d.NetworkInterfaceName)
-	if err != nil {
-		return err
-	}
-	options := []proxmox.VirtualMachineOption{
-		{Name: "ciuser", Value: d.SSHUser},
-		{Name: "sshkeys", Value: strings.ReplaceAll(url.QueryEscape(sshKeys), "+", "%20")},
-	}
-	return d.runTaskOnCurrentMachine(ctx, func(ctx context.Context, machine *proxmox.VirtualMachine) (*proxmox.Task, error) {
-		if err := requireNativeCloudInitDrive(machine.VirtualMachineConfig); err != nil {
-			return nil, err
-		}
-		if err := requireDynamicCloudInitAddress(machine.VirtualMachineConfig, d.NetworkInterfaceName, interfaceNumber); err != nil {
-			return nil, err
-		}
-		return machine.Config(ctx, options...)
-	})
-}
-
 func requireDynamicCloudInitAddress(config *proxmox.VirtualMachineConfig, interfaceName string, interfaceNumber int) error {
 	if _, found := config.MergeNets()[interfaceName]; !found {
 		return errors.New("configured placement network interface is missing from cloned template")
@@ -387,7 +347,7 @@ func (d *Driver) resizePlacedBootDisk(ctx context.Context) error {
 
 func networkInterfaceNumber(name string) (int, error) {
 	if !strings.HasPrefix(name, "net") {
-		return 0, errors.New("placement native cloud-init requires a netN network interface")
+		return 0, errors.New("placement cloud-init requires a netN network interface")
 	}
 	index, err := strconv.Atoi(strings.TrimPrefix(name, "net"))
 	if err != nil || index < 0 || index > 31 {
@@ -466,26 +426,6 @@ func validateRancherMachineTags(clusterName, poolName string) error {
 	}
 	if rancherInfoTag("cluster", clusterName) == "" || rancherInfoTag("pool", poolName) == "" {
 		return errors.New("Rancher cluster or machine-pool name cannot be represented as a Proxmox tag")
-	}
-	return nil
-}
-
-func hasCloudInitDisk(config *proxmox.VirtualMachineConfig) bool {
-	if config == nil {
-		return false
-	}
-	for _, device := range config.MergeDisks() {
-		if strings.Contains(device, "cloudinit") {
-			return true
-		}
-	}
-
-	return false
-}
-
-func requireNativeCloudInitDrive(config *proxmox.VirtualMachineConfig) error {
-	if !hasCloudInitDisk(config) {
-		return errors.New("cloned VM has no Proxmox cloud-init drive")
 	}
 	return nil
 }

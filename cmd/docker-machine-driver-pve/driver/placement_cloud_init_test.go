@@ -4,14 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/luthermonson/go-proxmox"
-	"github.com/rancher/machine/libmachine/ssh"
 	"github.com/stretchr/testify/require"
 	yaml "gopkg.in/yaml.v3"
 )
@@ -159,67 +157,12 @@ func TestPlacementISOSelectsAvailableIDEDeviceWithoutTemplateCloudInitDrive(t *t
 	require.ErrorContains(t, err, "no available IDE slot")
 }
 
-func TestNativeCloudInitStillRequiresTemplateCloudInitDrive(t *testing.T) {
-	require.ErrorContains(t, requireNativeCloudInitDrive(&proxmox.VirtualMachineConfig{SCSI0: "local:disk"}), "no Proxmox cloud-init drive")
-	require.NoError(t, requireNativeCloudInitDrive(&proxmox.VirtualMachineConfig{IDE2: "local:cloudinit"}))
-}
-
-func TestNativeCloudInitURLencodesSSHKeyForProxmox(t *testing.T) {
-	const upid = "UPID:pve1:00001234:00000042:67300000:qmconfig:106:root@pam:"
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var data any
-		switch r.URL.Path {
-		case "/api2/json/pools/testpool":
-			data = map[string]any{"poolid": "testpool", "members": []any{map[string]any{"type": "qemu", "vmid": 106, "node": "pve1"}}}
-		case "/api2/json/nodes/pve1/status":
-			data = map[string]any{}
-		case "/api2/json/nodes/pve1/qemu/106/status/current":
-			data = map[string]any{"vmid": 106, "name": "test", "tags": "docker-machine"}
-		case "/api2/json/nodes/pve1/qemu/106/config":
-			if r.Method == http.MethodPost {
-				var body map[string]any
-				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-				encoded, ok := body["sshkeys"].(string)
-				require.True(t, ok)
-				decoded, err := url.QueryUnescape(encoded)
-				require.NoError(t, err)
-				if !strings.Contains(encoded, "%20") || !strings.HasPrefix(decoded, "ssh-rsa ") {
-					w.WriteHeader(http.StatusBadRequest)
-					_, _ = w.Write([]byte(`{"errors":{"sshkeys":"invalid urlencoded string"}}`))
-					return
-				}
-				require.Equal(t, "ssh-rsa AAAA+BBB/CCC test", decoded)
-				data = upid
-			} else {
-				data = map[string]any{"net0": "virtio,bridge=vmbr0", "ipconfig0": "ip=dhcp", "ide2": "local:cloudinit", "tags": "docker-machine"}
-			}
-		case "/api2/json/nodes/pve1/tasks/" + upid + "/status":
-			data = map[string]any{"upid": upid, "node": "pve1", "status": "stopped", "exitstatus": "OK"}
-		default:
-			t.Errorf("unexpected path %s", r.URL.Path)
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
-	}))
-	defer server.Close()
-	d := NewDriver("test", t.TempDir())
-	d.URL, d.TokenID, d.TokenSecret, d.InsecureTLS = server.URL, "user@pve!test", "test-secret", true
-	d.ResourcePoolName, d.NetworkInterfaceName = "testpool", "net0"
-	d.SSHKeyPath = filepath.Join(t.TempDir(), "id_rsa")
-	require.NoError(t, os.WriteFile(d.GetSSHPublicKeyPath(), []byte("ssh-rsa AAAA+BBB/CCC test\n"), 0600))
+func TestPlacedInitializationRequiresMachineIncarnationIdentity(t *testing.T) {
+	d := NewDriver("worker-1", t.TempDir())
 	vmid := 106
 	d.PVEMachineID = &vmid
-	require.NoError(t, d.setupNativeCloudInit(t.Context()))
-}
-
-func TestNativeCloudInitAcceptsGeneratedPublicKey(t *testing.T) {
-	d := NewDriver("test", t.TempDir())
-	d.SSHKeyPath = filepath.Join(t.TempDir(), "id_rsa")
-	require.NoError(t, ssh.GenerateSSHKey(d.SSHKeyPath))
-	// A missing network interface fails immediately after key validation, without contacting Proxmox.
-	err := d.setupNativeCloudInit(t.Context())
-	require.ErrorContains(t, err, "network interface")
+	d.placementNode = "pve1"
+	require.ErrorContains(t, d.initializePlaced(t.Context()), "incarnation identity is unavailable")
 }
 
 func TestCloudInitInstallsGeneratedAndSharedPublicKeys(t *testing.T) {
