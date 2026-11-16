@@ -41,7 +41,7 @@ func placementCloudInitNetwork(config *proxmox.VirtualMachineConfig, interfaceNa
 			"primary": map[string]any{
 				"match":           map[string]string{"macaddress": strings.ToLower(mac.String())},
 				"dhcp4":           true,
-				"dhcp4-overrides": map[string]bool{"use-dns": true, "use-domains": true},
+				"dhcp4-overrides": map[string]any{"use-dns": true, "use-domains": "true"},
 			},
 		},
 	}
@@ -50,6 +50,30 @@ func placementCloudInitNetwork(config *proxmox.VirtualMachineConfig, interfaceNa
 		return "", fmt.Errorf("encode generated cloud-init network: %w", err)
 	}
 	return string(data), nil
+}
+
+// generatePlacementCloudInitUserdata allows DHCP DNS to replace resolver state
+// inherited from images previously initialized with static nameservers.
+func (d *Driver) generatePlacementCloudInitUserdata() (string, error) {
+	userdata, err := d.generateCloudinitUserdata()
+	if err != nil {
+		return "", err
+	}
+	var config map[string]any
+	if err := yaml.Unmarshal([]byte(userdata), &config); err != nil {
+		return "", fmt.Errorf("decode placement cloud-init user data: %w", err)
+	}
+	config["write_files"] = []map[string]any{{
+		"path":        "/etc/NetworkManager/conf.d/99-z-pve-dhcp-dns.conf",
+		"permissions": "0644",
+		"content":     "[main]\ndns=default\n",
+	}}
+	config["runcmd"] = [][]string{{"sh", "-c", "if systemctl is-active --quiet NetworkManager; then systemctl reload NetworkManager; fi"}}
+	data, err := yaml.Marshal(config)
+	if err != nil {
+		return "", fmt.Errorf("encode placement cloud-init user data: %w", err)
+	}
+	return "#cloud-config\n" + string(data), nil
 }
 
 const (
@@ -167,7 +191,7 @@ func (d *Driver) setupGeneratedPlacementISO(ctx context.Context, vm *proxmox.Vir
 	if err != nil {
 		return err
 	}
-	userdata, err := d.generateCloudinitUserdata()
+	userdata, err := d.generatePlacementCloudInitUserdata()
 	if err != nil {
 		return err
 	}

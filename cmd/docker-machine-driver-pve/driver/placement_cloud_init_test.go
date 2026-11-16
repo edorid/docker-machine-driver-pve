@@ -28,7 +28,23 @@ func TestPlacementCloudInitNetworkUsesDHCPWithoutStaticDNS(t *testing.T) {
 	require.Equal(t, true, primary["dhcp4"])
 	dhcpOverrides := primary["dhcp4-overrides"].(map[string]any)
 	require.Equal(t, true, dhcpOverrides["use-dns"], "accept DNS servers advertised by DHCP")
-	require.Equal(t, true, dhcpOverrides["use-domains"], "accept domain and search domains advertised by DHCP")
+	require.Equal(t, "true", dhcpOverrides["use-domains"], "use the string required by Cloud-Init's network schema")
+}
+
+func TestPlacementUserDataEnablesNetworkManagerDHCPDNS(t *testing.T) {
+	d := NewDriver("worker-1", t.TempDir())
+	d.SSHKeyPath = filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, os.WriteFile(d.GetSSHPublicKeyPath(), []byte("ssh-rsa AAAA generated\n"), 0600))
+	userdata, err := d.generatePlacementCloudInitUserdata()
+	require.NoError(t, err)
+	var parsed map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(strings.TrimPrefix(userdata, "#cloud-config\n")), &parsed))
+	files := parsed["write_files"].([]any)
+	file := files[0].(map[string]any)
+	require.Equal(t, "/etc/NetworkManager/conf.d/99-z-pve-dhcp-dns.conf", file["path"])
+	require.Contains(t, file["content"], "dns=default")
+	require.NotContains(t, userdata, "8.8.8.8")
+	require.Contains(t, userdata, "reload NetworkManager")
 }
 
 func TestPlacementCloudInitNetworkRejectsAmbiguousInterfaces(t *testing.T) {
