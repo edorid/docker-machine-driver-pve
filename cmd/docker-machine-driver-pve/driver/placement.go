@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/edorid/docker-machine-driver-pve/internal/placement"
@@ -212,7 +213,7 @@ func (d *Driver) allocatePlacementVMID(ctx context.Context) (int, error) {
 
 //nolint:wsl // Retry only safe identity conflicts and keep each reservation attempt ordered.
 func (d *Driver) reservePlacement(ctx context.Context, coordinator placement.Coordinator, intent placement.Intent, discover placement.Discover) (placement.Record, error) {
-	for range 3 {
+	for range placement.MaxLedgerRecords + 1 {
 		document, err := coordinator.Store.Read(ctx)
 		if err != nil {
 			return placement.Record{}, fmt.Errorf("read placement ledger before reservation: %w", err)
@@ -228,6 +229,41 @@ func (d *Driver) reservePlacement(ctx context.Context, coordinator placement.Coo
 			if err != nil {
 				return placement.Record{}, err
 			}
+			claimed := make(map[int]bool, len(document.Ledger.Records))
+			for _, record := range document.Ledger.Records {
+				claimed[record.VMID] = true
+			}
+			for claimed[intent.VMID] {
+				intent.VMID++
+				if intent.VMID > 999999999 {
+					return placement.Record{}, errors.New("no VMID available after ledger reservations")
+				}
+			}
+			// Proxmox's next ID is free, but an alternative selected past ledger
+			// claims must be independently checked against the whole cluster.
+			for checks := 0; ; checks++ {
+				if checks >= 1024 {
+					return placement.Record{}, errors.New("VMID candidate search exceeded safe limit")
+				}
+				var result string
+				err = d.getPVEClient().Get(ctx, fmt.Sprintf("/cluster/nextid?vmid=%d", intent.VMID), &result)
+				if err == nil {
+					if result != strconv.Itoa(intent.VMID) {
+						return placement.Record{}, fmt.Errorf("verify candidate VMID %d: unexpected Proxmox response", intent.VMID)
+					}
+					break
+				}
+				if !strings.Contains(err.Error(), fmt.Sprintf("VM %d already exists", intent.VMID)) {
+					return placement.Record{}, fmt.Errorf("verify candidate VMID %d: %w", intent.VMID, err)
+				}
+				intent.VMID++
+				for claimed[intent.VMID] && intent.VMID <= 999999999 {
+					intent.VMID++
+				}
+				if intent.VMID > 999999999 {
+					return placement.Record{}, errors.New("no VMID available after ledger reservations")
+				}
+			}
 		}
 		record, _, reserveErr := coordinator.Reserve(ctx, intent, discover)
 		if reserveErr == nil {
@@ -235,6 +271,20 @@ func (d *Driver) reservePlacement(ctx context.Context, coordinator placement.Coo
 		}
 		if !errors.Is(reserveErr, placement.ErrIdentityConflict) {
 			return placement.Record{}, fmt.Errorf("reserve placement: %w", reserveErr)
+		}
+		latest, err := coordinator.Store.Read(ctx)
+		if err != nil {
+			return placement.Record{}, fmt.Errorf("read placement ledger after identity conflict: %w", err)
+		}
+		collision := false
+		for _, record := range latest.Ledger.Records {
+			if record.VMID == intent.VMID && record.MachineID != intent.MachineID {
+				collision = true
+				break
+			}
+		}
+		if !collision {
+			return placement.Record{}, reserveErr
 		}
 	}
 	return placement.Record{}, fmt.Errorf("reserve placement after VMID collisions: %w", placement.ErrIdentityConflict)
