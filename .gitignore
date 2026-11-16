@@ -2,6 +2,7 @@
 /.task
 /bin
 /dist-pkg
+/dist
 /licenses.txt
 /node_modules
 /tmp

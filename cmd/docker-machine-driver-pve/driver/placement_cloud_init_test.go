@@ -194,6 +194,26 @@ func TestNativeCloudInitAcceptsGeneratedPublicKey(t *testing.T) {
 	require.ErrorContains(t, err, "network interface")
 }
 
+func TestCloudInitInstallsGeneratedAndSharedPublicKeys(t *testing.T) {
+	d := NewDriver("worker-1", t.TempDir())
+	d.SSHKeyPath = filepath.Join(t.TempDir(), "id_rsa")
+	require.NoError(t, os.WriteFile(d.GetSSHPublicKeyPath(), []byte("ssh-rsa AAAA generated\n"), 0600))
+	d.SharedSSHPublicKey = "ssh-ed25519 AAAA shared operator"
+	userdata, err := d.generateCloudinitUserdata()
+	require.NoError(t, err)
+	var parsed map[string]any
+	require.NoError(t, yaml.Unmarshal([]byte(strings.TrimPrefix(userdata, "#cloud-config\n")), &parsed))
+	users := parsed["users"].([]any)
+	keys := users[0].(map[string]any)["ssh_authorized_keys"].([]any)
+	require.Equal(t, []any{"ssh-rsa AAAA generated", "ssh-ed25519 AAAA shared operator"}, keys)
+}
+
+func TestValidateSharedSSHPublicKey(t *testing.T) {
+	require.NoError(t, validateSharedSSHPublicKey(""))
+	require.NoError(t, validateSharedSSHPublicKey("ssh-ed25519 AAAA comment"))
+	require.Error(t, validateSharedSSHPublicKey("-----BEGIN OPENSSH PRIVATE KEY-----"))
+}
+
 func TestRequireDynamicCloudInitAddress(t *testing.T) {
 	tests := []struct {
 		name    string

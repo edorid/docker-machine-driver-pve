@@ -73,6 +73,7 @@ export default {
         networkInterface: this.value.networkInterface ?? '',
         sshUser: this.value.sshUser ? this.value.sshUser : 'user',
         sshPort: this.value.sshPort ? parseInt(this.value.sshPort) : 22,
+        sshPublicKey: this.value.sshPublicKey ?? '',
         processorSockets: this.value.processorSockets ? parseInt(this.value.processorSockets) : 1,
         processorCores: this.value.processorCores ? parseInt(this.value.processorCores) : "",
         memory: this.value.memory ? parseInt(this.value.memory) : "",
@@ -219,6 +220,11 @@ export default {
   },
   methods: {
     validate(){
+      const sharedKey = this.currentValue.sshPublicKey.trim();
+      if(sharedKey && (sharedKey.includes('PRIVATE KEY') || !/^(ssh-|ecdsa-|sk-)[^\s]+\s+\S+/m.test(sharedKey))) {
+        this.$emit('validationChanged', false);
+        return
+      }
       // Default optional number fields to empty string
       if(this.currentValue.processorSockets === null || this.currentValue.processorSockets === 0) {
         this.currentValue.processorSockets = "";
@@ -312,6 +318,7 @@ export default {
       this.value.networkInterface = this.currentValue.placementEnabled ? '' : this.currentValue.networkInterface;
       this.value.sshUser = this.currentValue.sshUser;
       this.value.sshPort = this.currentValue.sshPort.toString();
+      this.value.sshPublicKey = sharedKey;
       this.value.processorSockets = this.currentValue.processorSockets.toString();
       this.value.processorCores = this.currentValue.processorCores.toString();
       this.value.memory = this.currentValue.memory.toString();
@@ -332,6 +339,25 @@ export default {
       this.value.rancherMachinePool = this.currentValue.rancherMachinePool.trim();
 
       this.$emit('validationChanged', true);
+    },
+    loadSSHPublicKey(event){
+      const file = event.target.files && event.target.files[0];
+      if(!file) {
+        return
+      }
+      if(!file.name.endsWith('.pub')) {
+        event.target.value = '';
+        return
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        const key = String(reader.result || '').trim();
+        if(key && !key.includes('PRIVATE KEY') && /^(ssh-|ecdsa-|sk-)[^\s]+\s+\S+/.test(key)) {
+          this.currentValue.sshPublicKey = key;
+        }
+        event.target.value = '';
+      };
+      reader.readAsText(file);
     },
     async fetchCredential(){
       try {
@@ -1026,6 +1052,17 @@ export default {
             min="1"
             step="1"
           />
+        </div>
+      </div>
+      <div class="row mb-20">
+        <div class="col span-12">
+          <label class="ssh-public-key-label">SSH Public Key <span class="text-muted">(optional)</span></label>
+          <textarea v-model="currentValue.sshPublicKey" class="form-control" rows="3" spellcheck="false" placeholder="Paste an SSH public key (for example, the contents of id_ed25519.pub)" />
+          <label class="ssh-public-key-upload">
+            Choose .pub file
+            <input type="file" accept=".pub,text/plain" @change="loadSSHPublicKey" />
+          </label>
+          <div class="text-muted">Only the public key is installed on guest nodes. Do not upload a private key.</div>
         </div>
       </div>
 

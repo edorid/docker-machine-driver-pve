@@ -22,6 +22,7 @@ const (
 	flagNetworkInterface    = "pve-network-interface"
 	flagSSHUser             = "pve-ssh-user"
 	flagSSHPort             = "pve-ssh-port"
+	flagSharedSSHPublicKey  = "pve-ssh-public-key"
 	flagProcessorSockets    = "pve-processor-sockets"
 	flagProcessorCores      = "pve-processor-cores"
 	flagMemory              = "pve-memory"
@@ -72,6 +73,7 @@ type config struct {
 
 	// Bus/Device of the network interface to read machine's IP address from (e.g. 'net0').
 	NetworkInterfaceName string
+	SharedSSHPublicKey   string
 
 	// If set, number of processor sockets to configure for the machine.
 	ProcessorSockets *int
@@ -140,6 +142,7 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			EnvVar: flagEnvVarFromFlagName(flagTemplateID),
 			Usage:  "ID of the Proxmox VE template",
 		},
+		mcnflag.StringFlag{Name: flagSharedSSHPublicKey, EnvVar: flagEnvVarFromFlagName(flagSharedSSHPublicKey), Usage: "Optional additional SSH public key to install on the guest"},
 		mcnflag.StringFlag{
 			Name:   flagISODevice,
 			EnvVar: flagEnvVarFromFlagName(flagISODevice),
@@ -254,6 +257,10 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	} else if d.SSHPort < 0 {
 		return fmt.Errorf("flag '--%s' must be > 0", flagSSHPort)
 	}
+	d.SharedSSHPublicKey = strings.TrimSpace(opts.String(flagSharedSSHPublicKey))
+	if err := validateSharedSSHPublicKey(d.SharedSSHPublicKey); err != nil {
+		return fmt.Errorf("flag '--%s': %w", flagSharedSSHPublicKey, err)
+	}
 
 	var err error
 
@@ -344,4 +351,15 @@ func parseStringFlagToInt(value string) (*int, error) {
 	}
 
 	return &numberValue, nil
+}
+
+func validateSharedSSHPublicKey(value string) error {
+	if value == "" {
+		return nil
+	}
+	fields := strings.Fields(value)
+	if len(fields) < 2 || !(strings.HasPrefix(fields[0], "ssh-") || strings.HasPrefix(fields[0], "ecdsa-") || strings.HasPrefix(fields[0], "sk-")) {
+		return fmt.Errorf("must contain an SSH public key (private keys are not accepted)")
+	}
+	return nil
 }

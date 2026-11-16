@@ -260,13 +260,17 @@ func (d *Driver) setupNativeCloudInit(ctx context.Context) error {
 	if len(publicKey) == 0 || bytes.ContainsAny(publicKey, "\r\n") {
 		return errors.New("placement SSH public key is empty or malformed")
 	}
+	sshKeys := string(publicKey)
+	if d.SharedSSHPublicKey != "" {
+		sshKeys += "\n" + d.SharedSSHPublicKey
+	}
 	interfaceNumber, err := networkInterfaceNumber(d.NetworkInterfaceName)
 	if err != nil {
 		return err
 	}
 	options := []proxmox.VirtualMachineOption{
 		{Name: "ciuser", Value: d.SSHUser},
-		{Name: "sshkeys", Value: strings.ReplaceAll(url.QueryEscape(string(publicKey)), "+", "%20")},
+		{Name: "sshkeys", Value: strings.ReplaceAll(url.QueryEscape(sshKeys), "+", "%20")},
 	}
 	return d.runTaskOnCurrentMachine(ctx, func(ctx context.Context, machine *proxmox.VirtualMachine) (*proxmox.Task, error) {
 		if machine.VirtualMachineConfig == nil || !hasCloudInitDisk(machine.VirtualMachineConfig) {

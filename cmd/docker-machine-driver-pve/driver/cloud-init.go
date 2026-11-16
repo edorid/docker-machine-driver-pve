@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/luthermonson/go-proxmox"
@@ -104,6 +105,10 @@ func (d *Driver) generateCloudinitUserdata() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to read machine's SSH public key: %w", err)
 	}
+	keys := []string{strings.TrimSpace(string(sshPublicKey))}
+	if d.SharedSSHPublicKey != "" {
+		keys = append(keys, d.SharedSSHPublicKey)
+	}
 
 	userdata := map[string]interface{}{
 		"hostname":             d.MachineName,
@@ -111,12 +116,10 @@ func (d *Driver) generateCloudinitUserdata() (string, error) {
 		"create_hostname_file": true,
 		"users": []map[string]interface{}{
 			{
-				"name":        d.SSHUser,
-				"lock_passwd": true,
-				"sudo":        "ALL=(ALL) NOPASSWD:ALL",
-				"ssh_authorized_keys": []string{
-					string(sshPublicKey),
-				},
+				"name":                d.SSHUser,
+				"lock_passwd":         true,
+				"sudo":                "ALL=(ALL) NOPASSWD:ALL",
+				"ssh_authorized_keys": keys,
 			},
 		},
 	}

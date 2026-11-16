@@ -111,6 +111,7 @@ by DHCP. Custom network snippets are not supported.
 | `--pve-network-interface` | `PVE_NETWORK_INTERFACE` | N/A (required)                     | Bus/Device of the network interface to read machine's IP address from (e.g. `net0`).                                 |
 | `--pve-ssh-user`          | `PVE_SSH_USER`          | `service`                          | Username for the SSH user that will be created via cloud-init.                                                       |
 | `--pve-ssh-port`          | `PVE_SSH_PORT`          | `22`                               | Port to use when connecting to the machine via SSH.                                                                  |
+| `--pve-ssh-public-key`    | `PVE_SSH_PUBLIC_KEY`    | *unset*                            | Optional additional SSH public key installed on the guest; the driver's generated provisioning key remains separate. |
 | `--pve-processor-sockets` | `PVE_PROCESSOR_SOCKETS` | *unset*                            | If set, number of processor sockets to configure for the machine.                                                    |
 | `--pve-processor-cores`   | `PVE_PROCESSOR_CORES`   | *unset*                            | If set, number of processor cores to configure for the machine.                                                      |
 | `--pve-memory`            | `PVE_MEMORY`            | *unset* <sup>1</sup>               | If set, amount of memory in MiB to configure for the machine.                                                        |
