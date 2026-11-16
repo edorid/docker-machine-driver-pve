@@ -358,14 +358,20 @@ func (d *Driver) GetIP() (string, error) {
 		}
 	}
 
-	if len(possibleIPv4s) > 0 {
+	if len(possibleIPv4s) > 0 || len(possibleIPv6s) > 0 {
 		slices.Sort(possibleIPv4s)
-		return possibleIPv4s[0], nil
-	}
-
-	if len(possibleIPv6s) > 0 {
 		slices.Sort(possibleIPv6s)
-		return possibleIPv6s[0], nil
+		d.IPAddress, d.IPv6Address = "", ""
+		if len(possibleIPv4s) > 0 {
+			d.IPAddress = possibleIPv4s[0]
+		}
+		if len(possibleIPv6s) > 0 {
+			d.IPv6Address = possibleIPv6s[0]
+		}
+		if d.IPAddress != "" {
+			return d.IPAddress, nil
+		}
+		return d.IPv6Address, nil
 	}
 
 	return "", fmt.Errorf("failed to find Proxmox VE machine's ID='%d' address on interface '%s'", *d.PVEMachineID, d.NetworkInterfaceName)
