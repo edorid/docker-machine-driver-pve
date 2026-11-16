@@ -346,7 +346,7 @@ func (d *Driver) GetIP() (string, error) {
 				continue
 			}
 
-			if parsedAddress.IsLoopback() || parsedAddress.IsUnspecified() {
+			if parsedAddress.IsLoopback() || parsedAddress.IsUnspecified() || parsedAddress.IsLinkLocalUnicast() {
 				continue
 			}
 

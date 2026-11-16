@@ -10,7 +10,10 @@ import (
 )
 
 func TestDiscoveredAddressIsSavedInMachineConfig(t *testing.T) {
-	addresses := []any{map[string]any{"ip-address": "172.29.32.144", "ip-address-type": "ipv4"}}
+	addresses := []any{
+		map[string]any{"ip-address": "172.29.32.144", "ip-address-type": "ipv4"},
+		map[string]any{"ip-address": "fe80::1234", "ip-address-type": "ipv6"},
+	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var data any
 		switch r.URL.Path {
@@ -46,6 +49,7 @@ func TestDiscoveredAddressIsSavedInMachineConfig(t *testing.T) {
 	var saved struct{ IPAddress, IPv6Address string }
 	require.NoError(t, json.Unmarshal(encoded, &saved))
 	require.Equal(t, "172.29.32.144", saved.IPAddress)
+	require.Empty(t, saved.IPv6Address, "link-local IPv6 must not be advertised to Rancher")
 
 	addresses = []any{map[string]any{"ip-address": "2001:db8::42", "ip-address-type": "ipv6"}}
 	ip, err = d.GetIP()
@@ -56,4 +60,11 @@ func TestDiscoveredAddressIsSavedInMachineConfig(t *testing.T) {
 	require.NoError(t, json.Unmarshal(encoded, &saved))
 	require.Empty(t, saved.IPAddress)
 	require.Equal(t, "2001:db8::42", saved.IPv6Address)
+
+	addresses = []any{
+		map[string]any{"ip-address": "fe80::1234", "ip-address-type": "ipv6"},
+		map[string]any{"ip-address": "169.254.1.2", "ip-address-type": "ipv4"},
+	}
+	_, err = d.GetIP()
+	require.ErrorContains(t, err, "failed to find")
 }
