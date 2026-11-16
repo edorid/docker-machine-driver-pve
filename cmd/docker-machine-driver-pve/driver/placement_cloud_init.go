@@ -38,7 +38,11 @@ func placementCloudInitNetwork(config *proxmox.VirtualMachineConfig, interfaceNa
 	network := map[string]any{
 		"version": 2,
 		"ethernets": map[string]any{
-			"primary": map[string]any{"match": map[string]string{"macaddress": strings.ToLower(mac.String())}, "dhcp4": true},
+			"primary": map[string]any{
+				"match":           map[string]string{"macaddress": strings.ToLower(mac.String())},
+				"dhcp4":           true,
+				"dhcp4-overrides": map[string]bool{"use-dns": true, "use-domains": true},
+			},
 		},
 	}
 	data, err := yaml.Marshal(network)

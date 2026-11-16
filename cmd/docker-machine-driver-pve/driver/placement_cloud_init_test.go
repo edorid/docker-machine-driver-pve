@@ -23,7 +23,12 @@ func TestPlacementCloudInitNetworkUsesDHCPWithoutStaticDNS(t *testing.T) {
 	require.NotContains(t, network, "nameserver")
 	require.NotContains(t, network, "search")
 	require.Contains(t, strings.ToLower(network), "bc:24:11:12:34:56")
-	require.Contains(t, network, "dhcp4")
+	ethernets := parsed["ethernets"].(map[string]any)
+	primary := ethernets["primary"].(map[string]any)
+	require.Equal(t, true, primary["dhcp4"])
+	dhcpOverrides := primary["dhcp4-overrides"].(map[string]any)
+	require.Equal(t, true, dhcpOverrides["use-dns"], "accept DNS servers advertised by DHCP")
+	require.Equal(t, true, dhcpOverrides["use-domains"], "accept domain and search domains advertised by DHCP")
 }
 
 func TestPlacementCloudInitNetworkRejectsAmbiguousInterfaces(t *testing.T) {
