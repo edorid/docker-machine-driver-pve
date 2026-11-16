@@ -371,9 +371,6 @@ func discoverNodeInventory(ctx context.Context, client *proxmox.Client, nodeName
 		if !templateInventory.DynamicAddress {
 			templateInventory.CompatibilityReasons = append(templateInventory.CompatibilityReasons, "dynamic cloud-init addressing cannot be verified")
 		}
-		if !templateInventory.CloudInit {
-			templateInventory.CompatibilityReasons = append(templateInventory.CompatibilityReasons, "cloud-init drive is missing")
-		}
 		result.Templates = append(result.Templates, templateInventory)
 	}
 	return nil

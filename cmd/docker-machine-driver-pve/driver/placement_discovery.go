@@ -232,7 +232,7 @@ func (d *Driver) inspectPlacementTemplate(ctx context.Context, node *proxmox.Nod
 	if template.VirtualMachineConfig == nil || template.VirtualMachineConfig.Template != 1 {
 		return vmid, false, false, 0, 0, nil
 	}
-	if !hasCloudInitDisk(template.VirtualMachineConfig) || template.VirtualMachineConfig.CICustom != "" ||
+	if template.VirtualMachineConfig.CICustom != "" ||
 		(template.VirtualMachineConfig.Agent != "1" && !strings.Contains(template.VirtualMachineConfig.Agent, "enabled=1")) {
 		return vmid, false, false, 0, 0, nil
 	}

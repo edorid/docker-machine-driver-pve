@@ -92,7 +92,7 @@ func TestGeneratedPlacementISOUploadsBeforeAttachment(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve1/qemu/106/status/current":
 			data = map[string]any{"vmid": 106, "name": "worker-1"}
 		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve1/qemu/106/config":
-			data = map[string]any{"net0": "virtio=BC:24:11:12:34:56,bridge=vmbr0", "ipconfig0": "ip=dhcp", "ide2": "local:cloudinit"}
+			data = map[string]any{"net0": "virtio=BC:24:11:12:34:56,bridge=vmbr0", "ipconfig0": "ip=dhcp"}
 		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve1/storage/local/status":
 			data = map[string]any{"storage": "local", "enabled": 1, "active": 1, "content": "iso", "total": 1000000}
 		case r.Method == http.MethodGet && r.URL.Path == "/api2/json/nodes/pve1/storage/local/content":
@@ -134,6 +134,34 @@ func TestGeneratedPlacementISOUploadsBeforeAttachment(t *testing.T) {
 	require.NoError(t, d.setupGeneratedPlacementISO(t.Context(), vm))
 	require.True(t, uploaded)
 	require.True(t, attached)
+}
+
+func TestPlacementISOSelectsAvailableIDEDeviceWithoutTemplateCloudInitDrive(t *testing.T) {
+	device, err := selectPlacementISOMediaDevice(&proxmox.VirtualMachineConfig{SCSI0: "local-lvm:vm-106-disk-0"})
+	require.NoError(t, err)
+	require.Equal(t, "ide2", device)
+
+	device, err = selectPlacementISOMediaDevice(&proxmox.VirtualMachineConfig{
+		IDE2: "local:disk-image", IDE0: "none", SCSI0: "local-lvm:vm-106-disk-0",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ide0", device)
+
+	device, err = selectPlacementISOMediaDevice(&proxmox.VirtualMachineConfig{
+		IDE2: "local:cloudinit", IDE0: "local:disk-image",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "ide2", device, "reuse the Cloud-Init slot when present")
+
+	_, err = selectPlacementISOMediaDevice(&proxmox.VirtualMachineConfig{
+		IDE2: "local:disk-2", IDE0: "local:disk-0", IDE1: "local:disk-1", IDE3: "local:disk-3",
+	})
+	require.ErrorContains(t, err, "no available IDE slot")
+}
+
+func TestNativeCloudInitStillRequiresTemplateCloudInitDrive(t *testing.T) {
+	require.ErrorContains(t, requireNativeCloudInitDrive(&proxmox.VirtualMachineConfig{SCSI0: "local:disk"}), "no Proxmox cloud-init drive")
+	require.NoError(t, requireNativeCloudInitDrive(&proxmox.VirtualMachineConfig{IDE2: "local:cloudinit"}))
 }
 
 func TestNativeCloudInitURLencodesSSHKeyForProxmox(t *testing.T) {

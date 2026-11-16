@@ -969,7 +969,7 @@ export default {
                   <template v-if="selectedPlacementTemplate(host)">
                     <div>Boot disk: {{ selectedPlacementTemplate(host).bootDisk || 'unverified' }}</div>
                     <div>Network: {{ selectedPlacementTemplate(host).networkInterface || 'ambiguous' }} on {{ selectedPlacementTemplate(host).networkBridge || 'unavailable bridge' }}; dynamic cloud-init address: {{ selectedPlacementTemplate(host).dynamicAddress ? 'verified' : 'not verified' }}</div>
-                    <div>Cloud-init drive: {{ selectedPlacementTemplate(host).cloudInit ? 'present' : 'missing' }}; guest agent: {{ selectedPlacementTemplate(host).guestAgent ? 'present' : 'missing' }}</div>
+                    <div>Cloud-init media slot: {{ selectedPlacementTemplate(host).cloudInit ? 'present' : 'not preconfigured (the driver attaches per-machine media)' }}; guest agent: {{ selectedPlacementTemplate(host).guestAgent ? 'present' : 'missing' }}</div>
                     <div>Template disks: {{ Object.entries(selectedPlacementTemplate(host).disks || {}).map(([device, config]) => `${device}=${config}`).join('; ') || 'unavailable' }}</div>
                     <div>Disk storage: {{ Object.entries(selectedPlacementTemplate(host).diskStorages || {}).map(([device, storage]) => `${device}=${storage}`).join(', ') || 'unverified' }}</div>
                     <div v-if="selectedPlacementTemplate(host).compatibilityReasons && selectedPlacementTemplate(host).compatibilityReasons.length" class="text-error">{{ selectedPlacementTemplate(host).compatibilityReasons.join('; ') }}</div>

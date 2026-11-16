@@ -163,6 +163,10 @@ func (d *Driver) setupGeneratedPlacementISO(ctx context.Context, vm *proxmox.Vir
 	if err != nil {
 		return err
 	}
+	device, err := selectPlacementISOMediaDevice(config)
+	if err != nil {
+		return err
+	}
 	network, err := placementCloudInitNetwork(config, interfaceName)
 	if err != nil {
 		return err
@@ -216,16 +220,6 @@ func (d *Driver) setupGeneratedPlacementISO(ctx context.Context, vm *proxmox.Vir
 	if err := d.waitForPVETaskToSucceed(ctx, upload); err != nil {
 		return fmt.Errorf("wait for placement initialization ISO upload: %w", err)
 	}
-	device := ""
-	for name, value := range config.MergeDisks() {
-		if strings.Contains(value, "cloudinit") {
-			device = name
-			break
-		}
-	}
-	if device == "" {
-		return errors.New("cloned VM has no cloud-init media slot")
-	}
 	value := d.placementISOStorage + ":iso/" + d.placementISOName + ",media=cdrom"
 	task, err := vm.Config(ctx, proxmox.VirtualMachineOption{Name: device, Value: value})
 	if err != nil {
@@ -235,6 +229,25 @@ func (d *Driver) setupGeneratedPlacementISO(ctx context.Context, vm *proxmox.Vir
 		return fmt.Errorf("wait for placement initialization ISO attachment: %w", err)
 	}
 	return nil
+}
+
+func selectPlacementISOMediaDevice(config *proxmox.VirtualMachineConfig) (string, error) {
+	if config == nil {
+		return "", errors.New("cloned VM configuration is unavailable")
+	}
+	disks := config.MergeDisks()
+	ideDevices := []string{"ide2", "ide0", "ide1", "ide3"}
+	for _, name := range ideDevices {
+		if strings.Contains(disks[name], "cloudinit") {
+			return name, nil
+		}
+	}
+	for _, name := range ideDevices {
+		if value, found := disks[name]; !found || value == "none" {
+			return name, nil
+		}
+	}
+	return "", errors.New("cloned VM has no available IDE slot for placement initialization ISO")
 }
 
 func placementMetadata(existing, machineName, incarnationID string) (string, error) {
@@ -273,8 +286,8 @@ func (d *Driver) setupNativeCloudInit(ctx context.Context) error {
 		{Name: "sshkeys", Value: strings.ReplaceAll(url.QueryEscape(sshKeys), "+", "%20")},
 	}
 	return d.runTaskOnCurrentMachine(ctx, func(ctx context.Context, machine *proxmox.VirtualMachine) (*proxmox.Task, error) {
-		if machine.VirtualMachineConfig == nil || !hasCloudInitDisk(machine.VirtualMachineConfig) {
-			return nil, errors.New("cloned VM has no Proxmox cloud-init drive")
+		if err := requireNativeCloudInitDrive(machine.VirtualMachineConfig); err != nil {
+			return nil, err
 		}
 		if err := requireDynamicCloudInitAddress(machine.VirtualMachineConfig, d.NetworkInterfaceName, interfaceNumber); err != nil {
 			return nil, err
@@ -458,6 +471,9 @@ func validateRancherMachineTags(clusterName, poolName string) error {
 }
 
 func hasCloudInitDisk(config *proxmox.VirtualMachineConfig) bool {
+	if config == nil {
+		return false
+	}
 	for _, device := range config.MergeDisks() {
 		if strings.Contains(device, "cloudinit") {
 			return true
@@ -465,6 +481,13 @@ func hasCloudInitDisk(config *proxmox.VirtualMachineConfig) bool {
 	}
 
 	return false
+}
+
+func requireNativeCloudInitDrive(config *proxmox.VirtualMachineConfig) error {
+	if !hasCloudInitDisk(config) {
+		return errors.New("cloned VM has no Proxmox cloud-init drive")
+	}
+	return nil
 }
 
 func bootDisk(config *proxmox.VirtualMachineConfig) (string, uint64, error) {

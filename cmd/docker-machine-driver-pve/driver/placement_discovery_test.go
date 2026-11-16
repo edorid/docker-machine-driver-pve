@@ -37,7 +37,7 @@ func TestDiscoverPlacementBuildsCompleteSingleNodeSnapshot(t *testing.T) {
 		case "/api2/json/nodes/pve1/qemu/900/config":
 			payload = map[string]any{
 				"template": 1, "agent": "1", "boot": "order=scsi0;net0", "scsi0": "local-lvm:vm-900-disk-0",
-				"ide2": "local-lvm:cloudinit", "net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0", "ipconfig0": "ip=dhcp",
+				"net0": "virtio=AA:BB:CC:DD:EE:FF,bridge=vmbr0", "ipconfig0": "ip=dhcp",
 			}
 		default:
 			t.Errorf("unexpected Proxmox API path %s", request.URL.Path)
@@ -64,7 +64,7 @@ func TestDiscoverPlacementBuildsCompleteSingleNodeSnapshot(t *testing.T) {
 	require.Equal(t, uint64(2<<30), snapshot.Nodes[0].AllocatedMemoryBytes)
 	require.True(t, snapshot.Nodes[0].TemplateReady)
 	require.True(t, snapshot.Nodes[0].NetworkReady)
-	require.Equal(t, uint64(10)*gibibyte+4*mebibyte, snapshot.Nodes[0].TemplateDiskBytes)
+	require.Equal(t, uint64(10)*gibibyte, snapshot.Nodes[0].TemplateDiskBytes)
 	require.Equal(t, uint64(10)*gibibyte, snapshot.Nodes[0].TemplateBootDiskBytes)
 	require.Equal(t, []placement.Storage{{ID: "local-lvm", Ready: true, CloneSupported: true, TotalBytes: 1000, FreeBytes: 800, AllocatedBytes: 200}}, snapshot.Nodes[0].Storages)
 }
